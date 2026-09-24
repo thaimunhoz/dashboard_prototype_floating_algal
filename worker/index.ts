@@ -23,6 +23,10 @@ export default {
       // /api/mask/2025-01-01.shp
       const mask = url.pathname.match(/^\/api\/mask\/(\d{4}-\d{2}-\d{2})\.(\w+)$/)
       if (mask) return await getMaskFile(env, mask[1], mask[2].toLowerCase())
+
+      // /api/composites/weekly/2025-W03.png, /api/composites/monthly/summary.json
+      const comp = url.pathname.match(/^\/api\/composites\/(weekly|monthly)\/(summary\.json|[\w-]+\.png)$/)
+      if (comp) return await getComposite(env, comp[1], comp[2])
     } catch (err) {
       console.error(err)
       return json({ error: 'Internal error' }, 500)
@@ -73,6 +77,17 @@ async function getMaskFile(env: Env, date: string, ext: string): Promise<Respons
   // Daily masks rarely change once published; let browsers and the CDN cache them.
   headers.set('cache-control', 'public, max-age=86400')
   headers.set('content-disposition', `inline; filename="${date}.${ext}"`)
+  return new Response(obj.body, { headers })
+}
+
+async function getComposite(env: Env, kind: string, file: string): Promise<Response> {
+  const obj = await env.MASKS.get(`${env.MASK_PREFIX}composites/${kind}/${file}`)
+  if (!obj) return json({ error: `No composite ${kind}/${file}` }, 404)
+  const headers = new Headers()
+  obj.writeHttpMetadata(headers)
+  headers.set('etag', obj.httpEtag)
+  headers.set('content-type', file.endsWith('.png') ? 'image/png' : 'application/json')
+  headers.set('cache-control', `public, max-age=${file.endsWith('.png') ? 86400 : 300}`)
   return new Response(obj.body, { headers })
 }
 

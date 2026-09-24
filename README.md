@@ -3,10 +3,12 @@
 A public web dashboard for browsing daily floating-algae masks (Caribbean Sea) stored as
 shapefiles in a Cloudflare R2 bucket.
 
-- **Timeline** across the top: one bar per day, with height showing bloom area. Click or drag to pick a day, or press play to animate.
-- **Map** (MapLibre GL): dark or satellite basemap, with the day's mask drawn in green.
-- **Side panel**: place search, area/patch stats, and a per-month bloom-area chart (click a bar to jump to that day).
-- **Download** any day's mask as GeoJSON.
+- **Welcome page** on a visitor's first visit (reopen with the ⓘ button in the title).
+- **Daily / Weekly / Monthly** switch. Daily shows each day's mask; weekly (ISO, Mon–Sun) and monthly show frequency composites: every ~500 m cell coloured by the number of days algae were detected in it.
+- **Timeline** across the top: one bar per day, week or month, with height showing bloom area (mean daily area for weeks and months). Click or drag to pick one, or press play to animate.
+- **Map** (MapLibre GL): dark or satellite basemap.
+- **Side panel**: place search, stats, and a bloom-area chart (click a bar to jump there).
+- **Download** a day's mask as GeoJSON, or a composite as PNG.
 
 Stack: Vue 3 · Vite · TypeScript · MapLibre GL · shpjs · Cloudflare Workers + R2.
 
@@ -30,6 +32,9 @@ floating-algal-dashboard/
     2025-01-01/2025-01-01.shp    (+ .dbf .shx .prj .cpg)
     2025-01-02/2025-01-02.shp
     ...
+    composites/                  ← from scripts/build_composites.py
+      weekly/summary.json, 2025-W01.png, 2025-W01_lo.png, ...
+      monthly/summary.json, 2025-01.png, 2025-01_lo.png, ...
 ```
 
 ## Daily area summary
@@ -43,6 +48,33 @@ npm run summary -- E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS data/summary.jso
 Upload `data/summary.json` to `<MASK_PREFIX>summary.json` in the bucket. Re-run it when you add days.
 Without it, the dashboard still works: the timeline lists the day folders, and each day's area
 is measured when you open it.
+
+## Weekly and monthly composites
+
+Built from the local daily masks with Python (conda `base` has geopandas, shapely, numpy, Pillow);
+takes about a minute for a year:
+
+```bash
+conda run -n base python scripts/build_composites.py E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS data/composites
+```
+
+Each period gets a detailed image (`<id>.png`, ~500 m cells) and an overview (`<id>_lo.png`, ~4 km)
+used when zoomed out. The frequency classes and colours are set at the top of the script.
+To look at freshly built composites in `npm run dev` before uploading, put
+`VITE_COMPOSITES_URL=/data/composites/` in `.env.development.local`.
+
+## Uploading to R2
+
+`scripts/make-upload-manifest.mjs` lists files for `wrangler r2 bulk put`:
+
+```bash
+# everything
+npm run manifest -- --masks E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --composites data/composites --summary data/summary.json --out data/upload-manifest.json
+# only the composites
+npm run manifest -- --composites data/composites --out data/upload-composites.json
+
+npx wrangler r2 bulk put floating-algal-dashboard --filename data/upload-composites.json --remote
+```
 
 ## Development
 

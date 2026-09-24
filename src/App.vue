@@ -6,7 +6,12 @@
         <span class="l2">Algae</span>
         <span class="l3">Atlas</span>
       </h1>
-      <p class="region">{{ state.summary?.region || 'Caribbean Sea' }}</p>
+      <button class="about-btn" title="About this atlas" aria-label="About this atlas" @click="showWelcome = true">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M12 11v6M12 7.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </button>
     </header>
 
     <TimelineBar class="top" />
@@ -17,30 +22,37 @@
       <div class="panel-body">
         <p v-if="state.summaryError" class="error">{{ state.summaryError }}</p>
 
-        <div class="kpis">
+        <div v-if="state.mode === 'daily'" class="kpis">
           <div class="kpi">
             <span class="k">Bloom area</span>
-            <strong>{{ formatArea(selectedDay?.area_km2) }}<small> km²</small></strong>
+            <strong>{{ formatArea(sel?.area_km2) }}<small> km²</small></strong>
           </div>
           <div class="kpi">
             <span class="k">Patches</span>
-            <strong>{{ selectedDay?.patches?.toLocaleString('en-US') ?? '–' }}</strong>
+            <strong>{{ sel?.patches?.toLocaleString('en-US') ?? '–' }}</strong>
           </div>
           <div class="kpi">
             <span class="k">Days available</span>
-            <strong>{{ days.length || '–' }}</strong>
+            <strong>{{ state.summary?.days.length || '–' }}</strong>
+          </div>
+        </div>
+        <div v-else class="kpis">
+          <div class="kpi">
+            <span class="k">Mean daily area</span>
+            <strong>{{ formatArea(sel?.area_km2) }}<small> km²</small></strong>
+          </div>
+          <div class="kpi">
+            <span class="k">Peak day</span>
+            <strong>{{ formatArea(sel?.peak?.area_km2) }}<small> km²</small></strong>
+            <span class="k2">{{ sel?.peak ? formatDay(sel.peak.date) : '' }}</span>
+          </div>
+          <div class="kpi">
+            <span class="k">Days with data</span>
+            <strong>{{ sel ? sel.days : '–' }}<small v-if="sel"> / {{ periodLength }}</small></strong>
           </div>
         </div>
 
         <AreaChart />
-
-        <p class="about">
-          Floating algae such as <em>Sargassum</em> have become larger and more frequent across the
-          tropical Atlantic and Caribbean, with impacts on coastal ecosystems, water quality, fisheries
-          and tourism. This dashboard maps daily floating-algae masks derived from satellite
-          observations. Use the timeline to move through time, click a bar to jump to a day, and
-          download any day's mask as GeoJSON.
-        </p>
 
         <div class="logos">
           <img src="/logos/nasa-ecr.png" alt="NASA Earth Science Division – Early Career Research" />
@@ -61,16 +73,40 @@
         {{ state.panelOpen ? '‹' : '›' }}
       </button>
     </main>
+
+    <WelcomeModal v-if="showWelcome" @close="closeWelcome" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import TimelineBar from './components/TimelineBar.vue'
 import SearchBox from './components/SearchBox.vue'
 import AreaChart from './components/AreaChart.vue'
 import MapView from './components/MapView.vue'
-import { state, days, selectedDay, loadSummary, step, formatArea } from './state'
+import WelcomeModal from './components/WelcomeModal.vue'
+import { state, selectedPeriod as sel, loadSummary, step, formatArea, formatDay, toMs } from './state'
+
+const periodLength = computed(() => (sel.value ? (toMs(sel.value.end) - toMs(sel.value.start)) / 86_400_000 + 1 : 0))
+
+// Welcome page: shown on a browser's first visit, reopened from the (i) button.
+const WELCOME_KEY = 'faa-welcome-seen'
+const showWelcome = ref(!readSeen())
+function readSeen() {
+  try {
+    return localStorage.getItem(WELCOME_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+function closeWelcome() {
+  showWelcome.value = false
+  try {
+    localStorage.setItem(WELCOME_KEY, '1')
+  } catch {
+    // storage unavailable (private mode): the page just shows again next visit
+  }
+}
 
 onMounted(() => {
   loadSummary()
@@ -80,7 +116,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 function onKey(ev: KeyboardEvent) {
   const t = ev.target as HTMLElement
-  if (t.closest('input, select, textarea')) return
+  if (showWelcome.value || t.closest('input, select, textarea')) return
   if (ev.key === 'ArrowLeft') { state.playing = false; step(-1) }
   else if (ev.key === 'ArrowRight') { state.playing = false; step(1) }
   else if (ev.key === ' ' && !t.closest('button')) { ev.preventDefault(); state.playing = !state.playing }
@@ -106,8 +142,10 @@ function onKey(ev: KeyboardEvent) {
 
 .brand {
   grid-area: brand;
+  position: relative;
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
   padding: 14px 20px;
   background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
@@ -120,28 +158,43 @@ function onKey(ev: KeyboardEvent) {
 h1 {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
   line-height: 0.95;
   text-transform: uppercase;
   letter-spacing: 0.01em;
 }
 .l1,
 .l3 {
-  font-size: 30px;
+  font-size: 32px;
   font-weight: 800;
   color: #f4f8ec;
 }
 .l2 {
-  font-size: 30px;
+  font-size: 32px;
   font-weight: 500;
   color: #10220a;
 }
-.region {
-  margin-top: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(16, 34, 10, 0.75);
+.about-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(16, 34, 10, 0.7);
+  cursor: pointer;
+}
+.about-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #10220a;
+}
+.collapsed .about-btn {
+  display: none;
 }
 
 .top {
@@ -211,10 +264,9 @@ h1 {
   color: var(--text-3);
 }
 
-.about {
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text-2);
+.k2 {
+  font-size: 11px;
+  color: var(--text-3);
 }
 .logos {
   display: flex;

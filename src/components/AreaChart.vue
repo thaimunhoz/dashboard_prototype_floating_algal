@@ -1,24 +1,29 @@
 <template>
   <section class="chart">
     <header>
-      <h2>Algal bloom area <span class="unit">(km²)</span></h2>
-      <div class="month-nav">
-        <button :disabled="monthIdx <= 0" title="Previous month" @click="shiftMonth(-1)">‹</button>
-        <span>{{ monthLabel }}</span>
-        <button :disabled="monthIdx >= monthKeys.length - 1" title="Next month" @click="shiftMonth(1)">›</button>
+      <h2>
+        {{ state.mode === 'daily' ? 'Algal bloom area' : 'Mean daily bloom area' }}
+        <span class="unit">(km²)</span>
+      </h2>
+      <div v-if="groupKeys.length > 1" class="group-nav">
+        <button :disabled="groupIdx <= 0" :title="`Previous ${groupUnit}`" @click="shiftGroup(-1)">‹</button>
+        <span>{{ groupLabel }}</span>
+        <button :disabled="groupIdx >= groupKeys.length - 1" :title="`Next ${groupUnit}`" @click="shiftGroup(1)">›</button>
       </div>
+      <span v-else class="group-single">{{ groupLabel }}</span>
     </header>
 
     <p v-if="!state.summary?.hasAreas" class="note">
       Areas are measured as each day is opened. Run the summary script to show every day at once.
     </p>
 
-    <ol class="rows">
+    <ol ref="list" class="rows" :class="state.mode">
       <li
         v-for="r in rows"
-        :key="r.date"
-        :class="{ sel: r.date === state.selectedDate }"
-        @click="selectDate(r.date)"
+        :key="r.id"
+        :class="{ sel: r.id === state.selectedId }"
+        :title="r.title"
+        @click="selectPeriod(r.id)"
       >
         <span class="d">{{ r.label }}</span>
         <span class="bar-wrap">
@@ -28,54 +33,82 @@
       </li>
     </ol>
 
-    <footer v-if="monthTotal != null">
-      <div><span class="k">Peak</span><strong>{{ formatArea(monthPeak?.area) }} km²</strong><span class="k">{{ monthPeak ? monthPeak.label : '' }}</span></div>
-      <div><span class="k">Daily mean</span><strong>{{ formatArea(monthMean) }} km²</strong></div>
+    <footer v-if="stats">
+      <div><span class="k">Peak day</span><strong>{{ formatArea(stats.peak.area) }} km²</strong><span class="k">{{ stats.peak.label }}</span></div>
+      <div><span class="k">Mean per day</span><strong>{{ formatArea(stats.mean) }} km²</strong><span class="k">{{ groupLabel }}</span></div>
     </footer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { state, days, selectDate, formatArea, monthName } from '../state'
+import { computed, nextTick, ref, watch } from 'vue'
+import { state, periods, selectPeriod, formatArea, formatDay, formatPeriod, monthName, type Period } from '../state'
 
-const monthKeys = computed(() => [...new Set(days.value.map((d) => d.date.slice(0, 7)))])
-const month = ref('')
+const list = ref<HTMLOListElement>()
 
-// Follow the selected date into its month (e.g. while playing).
+// Daily rows are grouped by month; weekly and monthly rows by year.
+// (ISO week-year for weeks, so 2025-W01 starting 30 Dec 2024 stays with 2025.)
+const groupOf = (p: Period) => p.id.slice(0, state.mode === 'daily' ? 7 : 4)
+const groupKeys = computed(() => [...new Set(periods.value.map(groupOf))])
+const groupUnit = computed(() => (state.mode === 'daily' ? 'month' : 'year'))
+const group = ref('')
+
+// Follow the selection into its group (e.g. while playing or after a mode switch).
 watch(
-  () => state.selectedDate,
-  (d) => { if (d) month.value = d.slice(0, 7) },
+  () => [state.selectedId, state.mode] as const,
+  async () => {
+    const p = periods.value.find((x) => x.id === state.selectedId)
+    if (p) group.value = groupOf(p)
+    await nextTick()
+    list.value?.querySelector('.sel')?.scrollIntoView({ block: 'nearest' })
+  },
   { immediate: true },
 )
 
-const monthIdx = computed(() => monthKeys.value.indexOf(month.value))
-const monthLabel = computed(() => {
-  if (!month.value) return ''
-  const [y, m] = month.value.split('-').map(Number)
+const groupIdx = computed(() => groupKeys.value.indexOf(group.value))
+const groupLabel = computed(() => {
+  if (!group.value) return ''
+  if (state.mode !== 'daily') return group.value
+  const [y, m] = group.value.split('-').map(Number)
   return `${monthName(m - 1)} ${y}`
 })
-function shiftMonth(delta: number) {
-  const k = monthKeys.value[monthIdx.value + delta]
-  if (k) month.value = k
+function shiftGroup(delta: number) {
+  const k = groupKeys.value[groupIdx.value + delta]
+  if (k) group.value = k
+}
+
+function rowLabel(p: Period) {
+  if (state.mode === 'daily') return formatDay(p.id)
+  if (state.mode === 'monthly') return monthName(+p.id.slice(5, 7) - 1)
+  return `W${p.id.slice(6)} · ${formatDay(p.start)}`
 }
 
 const rows = computed(() => {
-  const list = days.value
-    .filter((d) => d.date.startsWith(month.value))
-    .map((d) => {
-      const live = d.area_km2 == null && state.liveStats?.date === d.date ? state.liveStats.area_km2 : null
-      return { date: d.date, area: d.area_km2 ?? live, label: `${monthName(+d.date.slice(5, 7) - 1)} ${+d.date.slice(8, 10)}` }
-    })
-  // Scale to the month's max so within-month variation stays readable.
-  const max = Math.max(0, ...list.map((r) => r.area ?? 0))
-  return list.map((r) => ({ ...r, pct: r.area && max ? Math.max(1.5, (r.area / max) * 100) : 0 }))
+  const inGroup = periods.value.filter((p) => groupOf(p) === group.value)
+  // Scale to the group's max so variation within it stays readable.
+  const max = Math.max(0, ...inGroup.map((p) => p.area_km2 ?? 0))
+  return inGroup.map((p) => ({
+    id: p.id,
+    area: p.area_km2,
+    label: rowLabel(p),
+    title: state.mode === 'daily' ? '' : `${formatPeriod(p, state.mode)} · ${p.days} day${p.days === 1 ? '' : 's'} with data`,
+    pct: p.area_km2 && max ? Math.max(1.5, (p.area_km2 / max) * 100) : 0,
+  }))
 })
 
-const known = computed(() => rows.value.filter((r) => r.area != null) as { area: number; label: string }[])
-const monthTotal = computed(() => (state.summary?.hasAreas && known.value.length ? known.value.reduce((s, r) => s + r.area, 0) : null))
-const monthMean = computed(() => (monthTotal.value != null ? monthTotal.value / known.value.length : null))
-const monthPeak = computed(() => known.value.reduce<(typeof known.value)[number] | null>((a, r) => (!a || r.area > a.area ? r : a), null))
+const stats = computed(() => {
+  if (!state.summary?.hasAreas) return null
+  const inGroup = periods.value.filter((p) => groupOf(p) === group.value && p.area_km2 != null)
+  if (!inGroup.length) return null
+  // Peak single day, and mean daily area weighted by days with data.
+  const peak = inGroup.reduce<{ area: number; label: string } | null>((best, p) => {
+    if (!p.peak || (best && best.area >= p.peak.area_km2)) return best
+    return { area: p.peak.area_km2, label: formatDay(p.peak.date) }
+  }, null)!
+  const days = inGroup.reduce((s, p) => s + p.days, 0)
+  const mean = inGroup.reduce((s, p) => s + p.area_km2! * p.days, 0) / days
+  return { peak, mean }
+})
 </script>
 
 <style scoped>
@@ -83,6 +116,7 @@ const monthPeak = computed(() => known.value.reduce<(typeof known.value)[number]
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
 }
 header {
   display: flex;
@@ -98,18 +132,23 @@ h2 {
   color: var(--text-3);
   font-weight: 500;
 }
-.month-nav {
+.group-nav {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
   font-weight: 600;
 }
-.month-nav span {
+.group-nav span {
   min-width: 64px;
   text-align: center;
 }
-.month-nav button {
+.group-single {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.group-nav button {
   width: 24px;
   height: 24px;
   border: 1px solid var(--line);
@@ -120,7 +159,7 @@ h2 {
   line-height: 1;
   cursor: pointer;
 }
-.month-nav button:disabled {
+.group-nav button:disabled {
   opacity: 0.35;
   cursor: default;
 }
@@ -136,6 +175,12 @@ h2 {
   flex-direction: column;
   gap: 1px;
 }
+.rows.weekly {
+  max-height: 460px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
 .rows li {
   display: grid;
   grid-template-columns: 50px 1fr;
@@ -147,6 +192,16 @@ h2 {
   cursor: pointer;
   font-size: 11px;
 }
+.rows.weekly li {
+  grid-template-columns: 78px 1fr;
+}
+.rows.monthly li {
+  height: 24px;
+  font-size: 12px;
+}
+.rows.monthly .bar {
+  height: 16px;
+}
 .rows li:hover {
   background: var(--panel-2);
 }
@@ -156,6 +211,7 @@ h2 {
 .d {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .sel .d {
   color: var(--text-1);

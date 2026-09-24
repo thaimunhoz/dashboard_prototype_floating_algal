@@ -10,3 +10,13 @@ export const summaryUrl = base ? `${base}summary.json` : '/api/summary'
 export function maskUrl(date: string) {
   return base ? `${base}${date}/${date}.shp` : `/api/mask/${date}.shp`
 }
+
+// Optional override for trying freshly built composites before uploading them,
+// e.g. VITE_COMPOSITES_URL=/data/composites/ in .env.development.local.
+const compositesBase = (import.meta.env.VITE_COMPOSITES_URL as string | undefined)?.replace(/\/?$/, '/')
+
+/** Weekly/monthly frequency composites from scripts/build_composites.py. */
+export function compositeUrl(kind: 'weekly' | 'monthly', file: string) {
+  if (compositesBase) return `${compositesBase}${kind}/${file}`
+  return base ? `${base}composites/${kind}/${file}` : `/api/composites/${kind}/${file}`
+}
