@@ -3,7 +3,7 @@
     <header class="brand">
       <h1>
         <span class="l1">Floating</span>
-        <span class="l2">Algae</span>
+        <span class="l2">Algal</span>
         <span class="l3">Atlas</span>
       </h1>
       <button class="about-btn" title="About this atlas" aria-label="About this atlas" @click="showWelcome = true">
@@ -21,36 +21,6 @@
 
       <div class="panel-body">
         <p v-if="state.summaryError" class="error">{{ state.summaryError }}</p>
-
-        <div v-if="state.mode === 'daily'" class="kpis">
-          <div class="kpi">
-            <span class="k">Bloom area</span>
-            <strong>{{ formatArea(sel?.area_km2) }}<small> km²</small></strong>
-          </div>
-          <div class="kpi">
-            <span class="k">Patches</span>
-            <strong>{{ sel?.patches?.toLocaleString('en-US') ?? '–' }}</strong>
-          </div>
-          <div class="kpi">
-            <span class="k">Days available</span>
-            <strong>{{ state.summary?.days.length || '–' }}</strong>
-          </div>
-        </div>
-        <div v-else class="kpis">
-          <div class="kpi">
-            <span class="k">Mean daily area</span>
-            <strong>{{ formatArea(sel?.area_km2) }}<small> km²</small></strong>
-          </div>
-          <div class="kpi">
-            <span class="k">Peak day</span>
-            <strong>{{ formatArea(sel?.peak?.area_km2) }}<small> km²</small></strong>
-            <span class="k2">{{ sel?.peak ? formatDay(sel.peak.date) : '' }}</span>
-          </div>
-          <div class="kpi">
-            <span class="k">Days with data</span>
-            <strong>{{ sel ? sel.days : '–' }}<small v-if="sel"> / {{ periodLength }}</small></strong>
-          </div>
-        </div>
 
         <AreaChart />
 
@@ -79,15 +49,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import TimelineBar from './components/TimelineBar.vue'
 import SearchBox from './components/SearchBox.vue'
 import AreaChart from './components/AreaChart.vue'
 import MapView from './components/MapView.vue'
 import WelcomeModal from './components/WelcomeModal.vue'
-import { state, selectedPeriod as sel, loadSummary, step, formatArea, formatDay, toMs } from './state'
-
-const periodLength = computed(() => (sel.value ? (toMs(sel.value.end) - toMs(sel.value.start)) / 86_400_000 + 1 : 0))
+import { state, loadSummary, step } from './state'
 
 // Welcome page: shown on every page load, reopened from the (i) button.
 const showWelcome = ref(true)
@@ -221,44 +189,6 @@ h1 {
   font-size: 12.5px;
 }
 
-.kpis {
-  display: grid;
-  grid-template-columns: 1.3fr 1fr 1fr;
-  gap: 8px;
-}
-.kpi {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px;
-  border-radius: 10px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  min-width: 0;
-}
-.kpi .k {
-  font-size: 11px;
-  color: var(--text-3);
-}
-.kpi strong {
-  font-size: 18px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.kpi:first-child strong {
-  color: var(--accent);
-}
-.kpi small {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-3);
-}
-
-.k2 {
-  font-size: 11px;
-  color: var(--text-3);
-}
 .logos {
   display: flex;
   align-items: center;

@@ -3,11 +3,12 @@
 //   - daily masks:  <masks-dir>/<YYYY-MM-DD>/<YYYY-MM-DD>.*  → <prefix><date>/<file>
 //   - composites:   <composites-dir>/{weekly,monthly}/*       → <prefix>composites/...
 //   - coverage:     <coverage-dir>/*                          → <prefix>coverage/...
+//   - cells:        <cells-dir>/*                             → <prefix>cells/...
 //   - summary.json                                            → <prefix>summary.json
 //
 // Usage:
-//   node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--summary FILE] [--out FILE]
-//   node scripts/make-upload-manifest.mjs --composites data/composites --coverage data/coverage --out data/upload-derived.json
+//   node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--out FILE]
+//   node scripts/make-upload-manifest.mjs --composites data/composites --coverage data/coverage --cells data/cells --out data/upload-derived.json
 // Then:
 //   npx wrangler r2 bulk put floating-algal-dashboard --filename <out> --remote
 import { readdir, writeFile, mkdir, stat } from 'node:fs/promises'
@@ -20,12 +21,13 @@ const { values: args } = parseArgs({
     masks: { type: 'string' },
     composites: { type: 'string' },
     coverage: { type: 'string' },
+    cells: { type: 'string' },
     summary: { type: 'string' },
     out: { type: 'string', default: 'data/upload-manifest.json' },
   },
 })
-if (!args.masks && !args.composites && !args.coverage && !args.summary) {
-  console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--summary FILE] [--out FILE]')
+if (!args.masks && !args.composites && !args.coverage && !args.cells && !args.summary) {
+  console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--out FILE]')
   process.exit(1)
 }
 
@@ -56,7 +58,7 @@ if (args.masks) {
   }
   console.log(`daily masks: ${days.length} days`)
 }
-for (const kind of ['composites', 'coverage']) {
+for (const kind of ['composites', 'coverage', 'cells']) {
   if (!args[kind]) continue
   let n = 0
   for await (const file of walk(args[kind])) {

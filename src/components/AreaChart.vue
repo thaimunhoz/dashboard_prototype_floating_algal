@@ -5,12 +5,21 @@
         {{ state.mode === 'daily' ? 'Algal bloom area' : 'Mean daily bloom area' }}
         <span class="unit">(km²)</span>
       </h2>
-      <div v-if="groupKeys.length > 1" class="group-nav">
+      <div class="group-nav">
         <button :disabled="groupIdx <= 0" :title="`Previous ${groupUnit}`" @click="shiftGroup(-1)">‹</button>
-        <span>{{ groupLabel }}</span>
+        <select
+          v-if="state.mode === 'daily'"
+          :value="month"
+          aria-label="Month"
+          @change="setMonth(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="m in monthOptions" :key="m.value" :value="m.value" :disabled="!m.available">{{ m.label }}</option>
+        </select>
+        <select :value="year" aria-label="Year" @change="setYear(($event.target as HTMLSelectElement).value)">
+          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
+        </select>
         <button :disabled="groupIdx >= groupKeys.length - 1" :title="`Next ${groupUnit}`" @click="shiftGroup(1)">›</button>
       </div>
-      <span v-else class="group-single">{{ groupLabel }}</span>
     </header>
 
     <p v-if="!state.summary?.hasAreas" class="note">
@@ -77,6 +86,27 @@ function shiftGroup(delta: number) {
   if (k) group.value = k
 }
 
+// Month and year chosen separately (daily groups are 'YYYY-MM', weekly/monthly groups 'YYYY').
+const years = computed(() => [...new Set(groupKeys.value.map((k) => k.slice(0, 4)))])
+const year = computed(() => group.value.slice(0, 4))
+const month = computed(() => group.value.slice(5, 7))
+const monthOptions = computed(() =>
+  Array.from({ length: 12 }, (_, i) => {
+    const value = String(i + 1).padStart(2, '0')
+    return { value, label: monthName(i), available: groupKeys.value.includes(`${year.value}-${value}`) }
+  }),
+)
+function setYear(y: string) {
+  if (state.mode !== 'daily') { group.value = y; return }
+  // Keep the month if that year has it, else the year's first month with data.
+  const same = `${y}-${month.value}`
+  group.value = groupKeys.value.includes(same) ? same : groupKeys.value.find((k) => k.startsWith(y)) ?? group.value
+}
+function setMonth(m: string) {
+  const k = `${year.value}-${m}`
+  if (groupKeys.value.includes(k)) group.value = k
+}
+
 function rowLabel(p: Period) {
   if (state.mode === 'daily') return formatDay(p.id)
   if (state.mode === 'monthly') return monthName(+p.id.slice(5, 7) - 1)
@@ -138,14 +168,20 @@ h2 {
   font-size: 12px;
   font-weight: 600;
 }
-.group-nav span {
-  min-width: 64px;
-  text-align: center;
-}
-.group-single {
+.group-nav select {
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-1);
+  font: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-2);
+  cursor: pointer;
+}
+.group-nav option:disabled {
+  color: var(--text-3);
 }
 .group-nav button {
   width: 24px;

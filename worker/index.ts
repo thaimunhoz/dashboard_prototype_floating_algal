@@ -31,6 +31,10 @@ export default {
       // /api/coverage/summary.json, /api/coverage/2025-01-13.geojson
       const cov = url.pathname.match(/^\/api\/coverage\/(summary\.json|\d{4}-\d{2}-\d{2}\.geojson)$/)
       if (cov) return await getDerived(env, `coverage/${cov[1]}`)
+
+      // /api/cells/grid.json, /api/cells/3_12.json
+      const cells = url.pathname.match(/^\/api\/cells\/(grid\.json|\d+_\d+\.json)$/)
+      if (cells) return await getDerived(env, `cells/${cells[1]}`)
     } catch (err) {
       console.error(err)
       return json({ error: 'Internal error' }, 500)
@@ -93,7 +97,8 @@ async function getDerived(env: Env, path: string): Promise<Response> {
   headers.set('etag', obj.httpEtag)
   const type = path.endsWith('.png') ? 'image/png' : path.endsWith('.geojson') ? 'application/geo+json' : 'application/json'
   headers.set('content-type', type)
-  headers.set('cache-control', `public, max-age=${path.endsWith('summary.json') ? 300 : 86400}`)
+  const short = path.endsWith('summary.json') || path.endsWith('grid.json')
+  headers.set('cache-control', `public, max-age=${short ? 300 : 86400}`)
   return new Response(obj.body, { headers })
 }
 

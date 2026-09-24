@@ -9,9 +9,9 @@
         <p>
           Algal blooms are rapid, large-scale accumulations of micro- or macroalgae in the upper water
           column. They occur in many kinds of coastal environments and can affect ecosystems, water
-          quality, fisheries and tourism. Monitoring floating algae is essential for designing integrated
+          quality, fisheries and tourism. Monitoring floating algal blooms is essential for designing integrated
           strategies for risk management, mitigation and adaptation. This portal provides daily
-          monitoring of floating algae based on available Landsat-8/9 and Sentinel-2 observations.
+          monitoring of floating algal blooms based on available Landsat-8/9 and Sentinel-2 observations.
         </p>
         <p>
           <strong>How to use:</strong> Move through time with the timeline, or click a bar to jump to a
@@ -30,7 +30,7 @@
         src="/landing-examples.webp"
         width="2000"
         height="866"
-        alt="Examples of detected floating algae (red) next to the satellite image: cyanobacteria in the Rio de la Plata, Argentina (30 Dec 2024); Ulva in the Yellow Sea, China (23 Jun 2019); Noctiluca scintillans in the Arabian Sea (14 Mar 2019); Aphanizomenon sp. in the Baltic Sea (20 Jul 2019)."
+        alt="Examples of detected floating algal blooms (red) next to the satellite image: cyanobacteria in the Rio de la Plata, Argentina (30 Dec 2024); Ulva in the Yellow Sea, China (23 Jun 2019); Noctiluca scintillans in the Arabian Sea (14 Mar 2019); Aphanizomenon sp. in the Baltic Sea (20 Jul 2019)."
       />
 
       <div class="logos">

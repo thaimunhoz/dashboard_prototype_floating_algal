@@ -7,7 +7,8 @@ shapefiles in a Cloudflare R2 bucket.
 - **Daily / Weekly / Monthly** switch. Daily shows each day's mask; weekly (ISO, Mon–Sun) and monthly show frequency composites: every ~500 m cell coloured by the number of days algae were detected in it.
 - **Timeline** across the top: one bar per day, week or month, with height showing bloom area (mean daily area for weeks and months). Click or drag to pick one, or press play to animate.
 - **Map** (MapLibre GL): dark or satellite basemap. In daily mode, the area observed that day (Sentinel-2 tiles, plus Landsat footprints split on the S2 grid) is shaded underneath the masks, so "no algae" can be told apart from "not imaged".
-- **Side panel**: place search, stats, and a bloom-area chart (click a bar to jump there).
+- **Side panel**: place search and a bloom-area chart with month/year pickers (click a bar to jump there).
+- **4 km cell time series**: zoomed in (zoom ≥ 6), click anywhere on the sea to see the daily algal bloom area in that fishnet cell, with observed-but-clear days and unobserved days told apart.
 - **Download** a day's mask as GeoJSON, or a composite as PNG.
 
 Stack: Vue 3 · Vite · TypeScript · MapLibre GL · shpjs · Cloudflare Workers + R2.
@@ -32,6 +33,8 @@ floating-algal-dashboard/
     2025-01-01/2025-01-01.shp    (+ .dbf .shx .prj .cpg)
     2025-01-02/2025-01-02.shp
     ...
+    cells/                       ← from scripts/build_cells.py
+      grid.json, 3_12.json, ...
     coverage/                    ← from scripts/build_coverage.py
       summary.json, 2025-01-01.geojson, ...
     composites/                  ← from scripts/build_composites.py
@@ -74,7 +77,19 @@ conda run -n base python scripts/build_coverage.py --out data/coverage   --s2-ti
 A tile counts as observed when a scene exists for it that day; clouds and swath edges inside a
 scene are not excluded (the inference rasters carry no nodata band).
 
-To look at freshly built composites/coverage in `npm run dev` before uploading, put
+## 4 km cell time series
+
+Daily algal bloom area per cell of the 4 km fishnet (a regular EPSG:3857 grid, so the browser finds the
+clicked cell arithmetically and nothing is drawn). Needs `data/coverage` first; about 30 s for a year:
+
+```bash
+conda run -n base python scripts/build_cells.py   --fishnet Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/shapefiles/caribbean_4km_fishnet.shp   --masks   E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --coverage data/coverage --out data/cells
+```
+
+Output: `grid.json` plus one file per 64×64-cell block (~50 kB), loaded only when a cell in it is clicked.
+Mask area outside the fishnet (e.g. inland water) is not counted.
+
+To look at freshly built composites/coverage/cells in `npm run dev` before uploading, put
 `VITE_DERIVED_URL=/data/` in `.env.development.local`.
 
 ## Uploading to R2
@@ -83,9 +98,9 @@ To look at freshly built composites/coverage in `npm run dev` before uploading, 
 
 ```bash
 # everything
-npm run manifest -- --masks E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --composites data/composites --coverage data/coverage --summary data/summary.json --out data/upload-manifest.json
-# only the derived files (composites + coverage)
-npm run manifest -- --composites data/composites --coverage data/coverage --out data/upload-derived.json
+npm run manifest -- --masks E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --composites data/composites --coverage data/coverage --cells data/cells --summary data/summary.json --out data/upload-manifest.json
+# only the derived files (composites + coverage + cells)
+npm run manifest -- --composites data/composites --coverage data/coverage --cells data/cells --out data/upload-derived.json
 
 npx wrangler r2 bulk put floating-algal-dashboard --filename data/upload-derived.json --remote
 ```

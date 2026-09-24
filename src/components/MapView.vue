@@ -36,7 +36,7 @@
         v-else-if="compositeShown"
         class="tool"
         :href="compositeShown.hi"
-        :download="`floating_algae_frequency_${compositeShown.id}.png`"
+        :download="`floating_algal_frequency_${compositeShown.id}.png`"
         target="_blank"
         rel="noopener"
         title="Download this composite as a PNG image"
@@ -53,9 +53,13 @@
       <span>{{ state.maskError || `Loading ${selectedPeriod ? formatPeriod(selectedPeriod, state.mode) : ''}…` }}</span>
     </div>
 
+    <div v-if="gridReady" class="cell-hint">
+      {{ zoom >= CELL_MIN_ZOOM ? 'Click a 4 km cell for its time series' : 'Zoom in to explore 4 km cell time series' }}
+    </div>
+
     <div v-if="state.mode === 'daily'" class="legend legend-daily">
       <div class="row">
-        <span class="swatch" /> Floating algae mask
+        <span class="swatch" /> Floating algal bloom mask
         <span v-if="current" class="legend-date">{{ formatDate(current.date) }}</span>
       </div>
       <template v-if="state.showCoverage && dayCoverage">
@@ -72,7 +76,7 @@
       </template>
     </div>
     <div v-else-if="comp" class="legend legend-ramp">
-      <span class="legend-title">Days with algae detected</span>
+      <span class="legend-title">Days with algal blooms detected</span>
       <span class="ramp">
         <span v-for="(c, i) in comp.ramp" :key="c" class="step">
           <i :style="{ background: c }" />
@@ -84,14 +88,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, createApp, h, onMounted, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
 import * as maplibregl from 'maplibre-gl'
 import type { GeoJSONSource, ImageSource, Map as MLMap } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre locates its worker next to its own module, which Vite's bundling breaks;
 // let Vite build the worker and hand MapLibre the resulting URL.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
-import { state, periods, selectedPeriod, formatDate, formatPeriod } from '../state'
+import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod } from '../state'
+import { loadGrid, cellAt, loadCellSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
+import CellSeries from './CellSeries.vue'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
 import { compositeUrl, coverageUrl } from '../dataSource'
 import type { FeatureCollection } from 'geojson'
@@ -107,6 +113,8 @@ const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line']
 const OBS_FILL = '#8fa6ff'
 const OBS_S2 = '#8fa6ff'
 const OBS_LANDSAT = '#e8b04a'
+// The 4 km cells become clickable from this zoom on.
+const CELL_MIN_ZOOM = 6
 // Detailed composite image takes over from the ~4 km overview around this zoom.
 const COMP_SWITCH_ZOOM = 6.5
 
@@ -120,6 +128,9 @@ const current = shallowRef<LoadedMask | null>(null)
 const compositeShown = shallowRef<{ id: string; hi: string; lo: string } | null>(null)
 const basemap = ref<'dark' | 'satellite'>('dark')
 const styleReady = ref(false)
+const zoom = ref(0)
+const gridReady = ref(false)
+let grid: Grid | null = null
 
 const comp = computed(() => (state.mode === 'daily' ? null : state.composites[state.mode] ?? null))
 const dayCoverage = computed(() => (state.mode === 'daily' ? state.coverage?.[state.selectedId] ?? null : null))
@@ -240,9 +251,22 @@ onMounted(() => {
       },
     }, firstLabel)
 
+    // 4 km cell under the cursor / clicked cell (the grid itself is never drawn).
+    m.addSource('cell-hover', { type: 'geojson', data: empty })
+    m.addSource('cell-selected', { type: 'geojson', data: empty })
+    m.addLayer({ id: 'cell-hover', type: 'line', source: 'cell-hover', paint: { 'line-color': '#ffffff', 'line-opacity': 0.45, 'line-width': 1 } })
+    m.addLayer({ id: 'cell-selected', type: 'line', source: 'cell-selected', paint: { 'line-color': '#ffffff', 'line-width': 2 } })
+
     styleReady.value = true
     if (current.value) setMaskData(current.value)
   })
+
+  zoom.value = m.getZoom()
+  m.on('zoom', () => { zoom.value = m.getZoom() })
+  loadGrid().then((g) => { grid = g; gridReady.value = !!g })
+  m.on('mousemove', onCellHover)
+  m.on('mouseout', () => setCellOutline('cell-hover', null))
+  m.on('click', onCellClick)
 
   map.value = m
   if (import.meta.env.DEV) (window as unknown as { __map: MLMap }).__map = m
@@ -254,6 +278,71 @@ function setMaskData(mask: LoadedMask) {
   if (!styleReady.value) return
   ;(map.value?.getSource('mask') as GeoJSONSource | undefined)?.setData(mask.geojson)
   ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask.points)
+}
+
+// ── 4 km cell time series ─────────────────────────────────────────
+function cellPolygon(c: CellRef) {
+  const [w, s_, e, n] = c.bounds
+  return { type: 'Feature' as const, properties: {}, geometry: { type: 'Polygon' as const, coordinates: [[[w, s_], [e, s_], [e, n], [w, n], [w, s_]]] } }
+}
+function setCellOutline(source: 'cell-hover' | 'cell-selected', c: CellRef | null) {
+  const src = map.value?.getSource(source) as GeoJSONSource | undefined
+  src?.setData({ type: 'FeatureCollection', features: c ? [cellPolygon(c)] : [] })
+}
+
+let hoverKey = ''
+function onCellHover(ev: maplibregl.MapMouseEvent) {
+  const m = map.value!
+  const c = grid && m.getZoom() >= CELL_MIN_ZOOM ? cellAt(grid, ev.lngLat.lng, ev.lngLat.lat) : null
+  const key = c ? `${c.row}_${c.col}` : ''
+  if (key === hoverKey) return
+  hoverKey = key
+  setCellOutline('cell-hover', c)
+  m.getCanvas().style.cursor = c ? 'pointer' : ''
+}
+
+let popup: maplibregl.Popup | null = null
+async function onCellClick(ev: maplibregl.MapMouseEvent) {
+  const m = map.value!
+  if (!grid || m.getZoom() < CELL_MIN_ZOOM) return
+  const c = cellAt(grid, ev.lngLat.lng, ev.lngLat.lat)
+  if (!c) return
+  popup?.remove()
+
+  const props = reactive({ series: null as Series | null, loading: true })
+  const el = document.createElement('div')
+  const center = `${((c.bounds[1] + c.bounds[3]) / 2).toFixed(3)}°, ${((c.bounds[0] + c.bounds[2]) / 2).toFixed(3)}°`
+  const app = createApp({
+    render: () =>
+      props.loading
+        ? h('div', { class: 'cell-loading' }, 'Loading time series…')
+        : h(CellSeries, {
+            series: props.series,
+            center,
+            selectedDate: state.mode === 'daily' ? state.selectedId : '',
+            onPick: (date: string) => {
+              if (state.mode !== 'daily') setMode('daily')
+              selectPeriod(date)
+            },
+          }),
+  })
+  app.mount(el)
+  setCellOutline('cell-selected', c)
+  const p = new maplibregl.Popup({ maxWidth: '340px', className: 'cell-popup', focusAfterOpen: false })
+    .setLngLat([(c.bounds[0] + c.bounds[2]) / 2, c.bounds[3]])
+    .setDOMContent(el)
+    .addTo(m)
+  p.on('close', () => {
+    app.unmount()
+    if (popup === p) {
+      popup = null
+      setCellOutline('cell-selected', null)
+    }
+  })
+  popup = p
+
+  props.series = await loadCellSeries(grid, c)
+  props.loading = false
 }
 
 // Coverage is small (~30 kB/day) and optional: cache a few days, show nothing on failure.
@@ -421,7 +510,7 @@ function download() {
   const blob = new Blob([JSON.stringify(mask.geojson)], { type: 'application/geo+json' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `floating_algae_mask_${mask.date}.geojson`
+  a.download = `floating_algal_mask_${mask.date}.geojson`
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 1000)
 }
@@ -583,6 +672,42 @@ function download() {
 }
 a.tool {
   text-decoration: none;
+}
+.cell-hint {
+  position: absolute;
+  top: 12px;
+  right: 56px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--text-2);
+  pointer-events: none;
+  z-index: 2;
+}
+:deep(.cell-popup .maplibregl-popup-content) {
+  padding: 12px 12px 10px;
+  border-radius: 10px;
+  background: #121620;
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+:deep(.cell-popup .maplibregl-popup-tip) {
+  border-top-color: #121620;
+  border-bottom-color: #121620;
+}
+:deep(.cell-popup .maplibregl-popup-close-button) {
+  color: var(--text-2);
+  font-size: 18px;
+  padding: 2px 8px;
+}
+:deep(.cell-loading) {
+  width: 300px;
+  padding: 20px 0;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 12px;
 }
 .tool.active {
   color: var(--text-1);

@@ -29,3 +29,8 @@ export function compositeUrl(kind: 'weekly' | 'monthly', file: string) {
 export function coverageUrl(file: string) {
   return derivedUrl(`coverage/${file}`)
 }
+
+/** 4 km fishnet time series from scripts/build_cells.py ('grid.json' or '<block>.json'). */
+export function cellsUrl(file: string) {
+  return derivedUrl(`cells/${file}`)
+}
