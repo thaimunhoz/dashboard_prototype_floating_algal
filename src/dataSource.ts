@@ -11,12 +11,21 @@ export function maskUrl(date: string) {
   return base ? `${base}${date}/${date}.shp` : `/api/mask/${date}.shp`
 }
 
-// Optional override for trying freshly built composites before uploading them,
-// e.g. VITE_COMPOSITES_URL=/data/composites/ in .env.development.local.
-const compositesBase = (import.meta.env.VITE_COMPOSITES_URL as string | undefined)?.replace(/\/?$/, '/')
+// Optional override for trying freshly built composites/coverage before uploading them,
+// e.g. VITE_DERIVED_URL=/data/ in .env.development.local (serves data/composites, data/coverage).
+const derivedBase = (import.meta.env.VITE_DERIVED_URL as string | undefined)?.replace(/\/?$/, '/')
+
+function derivedUrl(path: string) {
+  if (derivedBase) return `${derivedBase}${path}`
+  return base ? `${base}${path}` : `/api/${path}`
+}
 
 /** Weekly/monthly frequency composites from scripts/build_composites.py. */
 export function compositeUrl(kind: 'weekly' | 'monthly', file: string) {
-  if (compositesBase) return `${compositesBase}${kind}/${file}`
-  return base ? `${base}composites/${kind}/${file}` : `/api/composites/${kind}/${file}`
+  return derivedUrl(`composites/${kind}/${file}`)
+}
+
+/** Daily observation coverage from scripts/build_coverage.py ('summary.json' or '<date>.geojson'). */
+export function coverageUrl(file: string) {
+  return derivedUrl(`coverage/${file}`)
 }

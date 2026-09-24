@@ -116,7 +116,6 @@ const stats = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
 }
 header {
   display: flex;

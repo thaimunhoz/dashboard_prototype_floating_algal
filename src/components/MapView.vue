@@ -10,6 +10,19 @@
       <button
         v-if="state.mode === 'daily'"
         class="tool"
+        :class="{ active: state.showCoverage }"
+        :aria-pressed="state.showCoverage"
+        title="Show the area observed by Sentinel-2 / Landsat on this day"
+        @click="state.showCoverage = !state.showCoverage"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+        </svg>
+        Observed tiles
+      </button>
+      <button
+        v-if="state.mode === 'daily'"
+        class="tool"
         :disabled="!current || !current.geojson.features.length"
         title="Download this day's mask as GeoJSON"
         @click="download"
@@ -40,9 +53,23 @@
       <span>{{ state.maskError || `Loading ${selectedPeriod ? formatPeriod(selectedPeriod, state.mode) : ''}…` }}</span>
     </div>
 
-    <div v-if="state.mode === 'daily'" class="legend">
-      <span class="swatch" /> Floating algae mask
-      <span v-if="current" class="legend-date">{{ formatDate(current.date) }}</span>
+    <div v-if="state.mode === 'daily'" class="legend legend-daily">
+      <div class="row">
+        <span class="swatch" /> Floating algae mask
+        <span v-if="current" class="legend-date">{{ formatDate(current.date) }}</span>
+      </div>
+      <template v-if="state.showCoverage && dayCoverage">
+        <div class="row">
+          <span class="swatch obs" /> Observed
+          <span class="tile-key s2" /> Sentinel-2
+          <span class="tile-key ls" /> Landsat only
+        </div>
+        <div class="row muted">
+          {{ dayCoverage.s2_tiles }} S2 tiles · {{ dayCoverage.landsat_scenes }} Landsat scenes ·
+          {{ Math.round(dayCoverage.observed_km2 / 1000).toLocaleString('en-US') }}k km² observed
+        </div>
+        <div class="row muted">Blank areas outside the observed tiles were not imaged.</div>
+      </template>
     </div>
     <div v-else-if="comp" class="legend legend-ramp">
       <span class="legend-title">Days with algae detected</span>
@@ -66,7 +93,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { state, periods, selectedPeriod, formatDate, formatPeriod } from '../state'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
-import { compositeUrl } from '../dataSource'
+import { compositeUrl, coverageUrl } from '../dataSource'
+import type { FeatureCollection } from 'geojson'
 
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 const WATER = '#0d1540'
@@ -75,6 +103,10 @@ const MASK = '#9be22f'
 const DEFAULT_BOUNDS: [number, number, number, number] = [-88, 8, -58, 25]
 const MASK_LAYERS = ['mask-dots-glow', 'mask-dots', 'mask-fill', 'mask-line']
 const COMP_LAYERS = ['comp-lo', 'comp-hi']
+const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line']
+const OBS_FILL = '#8fa6ff'
+const OBS_S2 = '#8fa6ff'
+const OBS_LANDSAT = '#e8b04a'
 // Detailed composite image takes over from the ~4 km overview around this zoom.
 const COMP_SWITCH_ZOOM = 6.5
 
@@ -90,6 +122,7 @@ const basemap = ref<'dark' | 'satellite'>('dark')
 const styleReady = ref(false)
 
 const comp = computed(() => (state.mode === 'daily' ? null : state.composites[state.mode] ?? null))
+const dayCoverage = computed(() => (state.mode === 'daily' ? state.coverage?.[state.selectedId] ?? null : null))
 
 function classLabel(i: number) {
   const cls = comp.value!.classes
@@ -137,6 +170,28 @@ onMounted(() => {
     const empty = { type: 'FeatureCollection' as const, features: [] }
     m.addSource('mask', { type: 'geojson', data: empty })
     m.addSource('mask-points', { type: 'geojson', data: empty })
+    m.addSource('coverage', { type: 'geojson', data: empty })
+
+    // Observed area for the day (merged, so overlapping tiles don't darken) under the masks,
+    // plus S2 tile outlines: blue where Sentinel-2 imaged the tile, amber where only Landsat did.
+    m.addLayer({
+      id: 'coverage-fill',
+      type: 'fill',
+      source: 'coverage',
+      filter: ['==', ['get', 'kind'], 'observed'],
+      paint: { 'fill-color': OBS_FILL, 'fill-opacity': 0.09 },
+    }, firstLabel)
+    m.addLayer({
+      id: 'coverage-line',
+      type: 'line',
+      source: 'coverage',
+      filter: ['==', ['get', 'kind'], 'tile'],
+      paint: {
+        'line-color': ['case', ['==', ['get', 'sensors'], 'Landsat'], OBS_LANDSAT, OBS_S2],
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0.3, 8, 0.55],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 8, 1],
+      },
+    }, firstLabel)
 
     // Most patches are far smaller than a pixel at regional zoom and get dropped
     // when tiled, so show a glowing dot per patch until the polygons take over.
@@ -201,6 +256,26 @@ function setMaskData(mask: LoadedMask) {
   ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask.points)
 }
 
+// Coverage is small (~30 kB/day) and optional: cache a few days, show nothing on failure.
+const coverageCache = new Map<string, Promise<FeatureCollection | null>>()
+function loadCoverageDay(date: string) {
+  let p = coverageCache.get(date)
+  if (!p) {
+    p = fetch(coverageUrl(`${date}.geojson`))
+      .then((r) => (r.ok ? (r.json() as Promise<FeatureCollection>) : null))
+      .catch(() => null)
+    coverageCache.set(date, p)
+    if (coverageCache.size > 16) coverageCache.delete(coverageCache.keys().next().value!)
+  }
+  return p
+}
+function setCoverageData(fc: FeatureCollection | null) {
+  if (!styleReady.value) return
+  ;(map.value?.getSource('coverage') as GeoJSONSource | undefined)?.setData(fc ?? { type: 'FeatureCollection', features: [] })
+}
+
+watch(() => state.showCoverage, (on) => setVisible(COVERAGE_LAYERS, on && state.mode === 'daily'))
+
 function setVisible(ids: string[], on: boolean) {
   for (const id of ids) {
     if (map.value?.getLayer(id)) map.value.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none')
@@ -260,6 +335,10 @@ watch(
     if (mode === 'daily') {
       setVisible(COMP_LAYERS, false)
       setVisible(MASK_LAYERS, true)
+      setVisible(COVERAGE_LAYERS, state.showCoverage)
+      loadCoverageDay(id).then((fc) => {
+        if (my === token) setCoverageData(fc)
+      })
       state.maskLoading = true
       try {
         const mask = await loadMask(id)
@@ -278,6 +357,7 @@ watch(
 
     // Weekly / monthly composite.
     setVisible(MASK_LAYERS, false)
+    setVisible(COVERAGE_LAYERS, false)
     const summary = comp.value
     // Not ready yet: the watcher re-runs when the style or the composite summary arrives.
     if (!styleReady.value) return
@@ -503,6 +583,43 @@ function download() {
 }
 a.tool {
   text-decoration: none;
+}
+.tool.active {
+  color: var(--text-1);
+  border-color: rgba(143, 166, 255, 0.6);
+}
+.legend-daily {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  max-width: calc(100% - 90px);
+}
+.legend-daily .row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.legend-daily .muted {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.swatch.obs {
+  background: rgba(143, 166, 255, 0.35);
+  box-shadow: none;
+}
+.tile-key {
+  width: 14px;
+  height: 10px;
+  border: 1.5px solid;
+  border-radius: 2px;
+  margin-left: 4px;
+}
+.tile-key.s2 {
+  border-color: #8fa6ff;
+}
+.tile-key.ls {
+  border-color: #e8b04a;
 }
 
 :deep(.maplibregl-ctrl-group) {

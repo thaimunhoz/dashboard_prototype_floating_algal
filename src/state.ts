@@ -1,6 +1,6 @@
 import { reactive, computed } from 'vue'
 import type { SummaryResponse } from '../shared/types'
-import { summaryUrl, compositeUrl } from './dataSource'
+import { summaryUrl, compositeUrl, coverageUrl } from './dataSource'
 
 export type Mode = 'daily' | 'weekly' | 'monthly'
 export const MODES: Mode[] = ['daily', 'weekly', 'monthly']
@@ -30,11 +30,21 @@ export interface CompositeSummary {
   periods: { id: string; start: string; end: string; days: number; max_count: number }[]
 }
 
+/** Per-day observation counts from scripts/build_coverage.py. */
+export interface DayCoverage {
+  s2_tiles: number
+  landsat_scenes: number
+  tiles: number
+  observed_km2: number
+}
+
 /** Single shared store for the dashboard (small enough not to need Pinia). */
 export const state = reactive({
   summary: null as SummaryResponse | null,
   summaryError: '',
   composites: {} as Partial<Record<'weekly' | 'monthly', CompositeSummary | null>>,
+  coverage: null as Record<string, DayCoverage> | null,
+  showCoverage: true,
   mode: 'daily' as Mode,
   selectedId: '',
   playing: false,
@@ -155,6 +165,7 @@ export function setMode(mode: Mode) {
 }
 
 export async function loadSummary() {
+  loadCoverage()
   try {
     const res = await fetch(summaryUrl)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -177,6 +188,15 @@ export async function loadSummary() {
     selectPeriod(list.some((p) => p.id === fromUrl) ? fromUrl! : list[list.length - 1].id)
   } catch (err) {
     state.summaryError = `Could not load the list of masks (${(err as Error).message}).`
+  }
+}
+
+async function loadCoverage() {
+  try {
+    const res = await fetch(coverageUrl('summary.json'))
+    if (res.ok) state.coverage = ((await res.json()) as { days: Record<string, DayCoverage> }).days
+  } catch {
+    // coverage is optional; the map just shows masks without it
   }
 }
 

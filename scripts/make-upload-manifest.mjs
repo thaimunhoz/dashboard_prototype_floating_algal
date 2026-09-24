@@ -2,11 +2,12 @@
 // Builds the key/file list that `wrangler r2 bulk put` needs, uploading under MASK_PREFIX:
 //   - daily masks:  <masks-dir>/<YYYY-MM-DD>/<YYYY-MM-DD>.*  → <prefix><date>/<file>
 //   - composites:   <composites-dir>/{weekly,monthly}/*       → <prefix>composites/...
+//   - coverage:     <coverage-dir>/*                          → <prefix>coverage/...
 //   - summary.json                                            → <prefix>summary.json
 //
 // Usage:
-//   node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--summary FILE] [--out FILE]
-//   node scripts/make-upload-manifest.mjs --composites data/composites --out data/upload-composites.json
+//   node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--summary FILE] [--out FILE]
+//   node scripts/make-upload-manifest.mjs --composites data/composites --coverage data/coverage --out data/upload-derived.json
 // Then:
 //   npx wrangler r2 bulk put floating-algal-dashboard --filename <out> --remote
 import { readdir, writeFile, mkdir, stat } from 'node:fs/promises'
@@ -18,12 +19,13 @@ const { values: args } = parseArgs({
   options: {
     masks: { type: 'string' },
     composites: { type: 'string' },
+    coverage: { type: 'string' },
     summary: { type: 'string' },
     out: { type: 'string', default: 'data/upload-manifest.json' },
   },
 })
-if (!args.masks && !args.composites && !args.summary) {
-  console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--summary FILE] [--out FILE]')
+if (!args.masks && !args.composites && !args.coverage && !args.summary) {
+  console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--summary FILE] [--out FILE]')
   process.exit(1)
 }
 
@@ -54,13 +56,14 @@ if (args.masks) {
   }
   console.log(`daily masks: ${days.length} days`)
 }
-if (args.composites) {
+for (const kind of ['composites', 'coverage']) {
+  if (!args[kind]) continue
   let n = 0
-  for await (const file of walk(args.composites)) {
-    await add(`${prefix}composites/${relative(args.composites, file).split(sep).join('/')}`, file)
+  for await (const file of walk(args[kind])) {
+    await add(`${prefix}${kind}/${relative(args[kind], file).split(sep).join('/')}`, file)
     n++
   }
-  console.log(`composites: ${n} files`)
+  console.log(`${kind}: ${n} files`)
 }
 if (args.summary) await add(`${prefix}summary.json`, args.summary)
 

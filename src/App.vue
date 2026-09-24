@@ -221,6 +221,10 @@ h1 {
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
+.panel-body > * {
+  /* the body scrolls; its sections keep their natural height */
+  flex-shrink: 0;
+}
 .error {
   padding: 10px 12px;
   border-radius: 8px;

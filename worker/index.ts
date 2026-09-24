@@ -26,7 +26,11 @@ export default {
 
       // /api/composites/weekly/2025-W03.png, /api/composites/monthly/summary.json
       const comp = url.pathname.match(/^\/api\/composites\/(weekly|monthly)\/(summary\.json|[\w-]+\.png)$/)
-      if (comp) return await getComposite(env, comp[1], comp[2])
+      if (comp) return await getDerived(env, `composites/${comp[1]}/${comp[2]}`)
+
+      // /api/coverage/summary.json, /api/coverage/2025-01-13.geojson
+      const cov = url.pathname.match(/^\/api\/coverage\/(summary\.json|\d{4}-\d{2}-\d{2}\.geojson)$/)
+      if (cov) return await getDerived(env, `coverage/${cov[1]}`)
     } catch (err) {
       console.error(err)
       return json({ error: 'Internal error' }, 500)
@@ -80,14 +84,16 @@ async function getMaskFile(env: Env, date: string, ext: string): Promise<Respons
   return new Response(obj.body, { headers })
 }
 
-async function getComposite(env: Env, kind: string, file: string): Promise<Response> {
-  const obj = await env.MASKS.get(`${env.MASK_PREFIX}composites/${kind}/${file}`)
-  if (!obj) return json({ error: `No composite ${kind}/${file}` }, 404)
+/** Files built from the masks (composites, coverage); paths are validated by the routes above. */
+async function getDerived(env: Env, path: string): Promise<Response> {
+  const obj = await env.MASKS.get(`${env.MASK_PREFIX}${path}`)
+  if (!obj) return json({ error: `Not found: ${path}` }, 404)
   const headers = new Headers()
   obj.writeHttpMetadata(headers)
   headers.set('etag', obj.httpEtag)
-  headers.set('content-type', file.endsWith('.png') ? 'image/png' : 'application/json')
-  headers.set('cache-control', `public, max-age=${file.endsWith('.png') ? 86400 : 300}`)
+  const type = path.endsWith('.png') ? 'image/png' : path.endsWith('.geojson') ? 'application/geo+json' : 'application/json'
+  headers.set('content-type', type)
+  headers.set('cache-control', `public, max-age=${path.endsWith('summary.json') ? 300 : 86400}`)
   return new Response(obj.body, { headers })
 }
 

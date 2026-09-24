@@ -6,7 +6,7 @@ shapefiles in a Cloudflare R2 bucket.
 - **Welcome page** on a visitor's first visit (reopen with the ⓘ button in the title).
 - **Daily / Weekly / Monthly** switch. Daily shows each day's mask; weekly (ISO, Mon–Sun) and monthly show frequency composites: every ~500 m cell coloured by the number of days algae were detected in it.
 - **Timeline** across the top: one bar per day, week or month, with height showing bloom area (mean daily area for weeks and months). Click or drag to pick one, or press play to animate.
-- **Map** (MapLibre GL): dark or satellite basemap.
+- **Map** (MapLibre GL): dark or satellite basemap. In daily mode, the area observed that day (Sentinel-2 tiles, plus Landsat footprints split on the S2 grid) is shaded underneath the masks, so "no algae" can be told apart from "not imaged".
 - **Side panel**: place search, stats, and a bloom-area chart (click a bar to jump there).
 - **Download** a day's mask as GeoJSON, or a composite as PNG.
 
@@ -32,6 +32,8 @@ floating-algal-dashboard/
     2025-01-01/2025-01-01.shp    (+ .dbf .shx .prj .cpg)
     2025-01-02/2025-01-02.shp
     ...
+    coverage/                    ← from scripts/build_coverage.py
+      summary.json, 2025-01-01.geojson, ...
     composites/                  ← from scripts/build_composites.py
       weekly/summary.json, 2025-W01.png, 2025-W01_lo.png, ...
       monthly/summary.json, 2025-01.png, 2025-01_lo.png, ...
@@ -60,8 +62,20 @@ conda run -n base python scripts/build_composites.py E:/post_processing/CARIBBEA
 
 Each period gets a detailed image (`<id>.png`, ~500 m cells) and an overview (`<id>_lo.png`, ~4 km)
 used when zoomed out. The frequency classes and colours are set at the top of the script.
-To look at freshly built composites in `npm run dev` before uploading, put
-`VITE_COMPOSITES_URL=/data/composites/` in `.env.development.local`.
+## Daily observation coverage
+
+Which Sentinel-2 tiles were imaged each day, by Sentinel-2 or (split along the S2 grid) by
+Landsat. Built from the inference file names and the two tile shapefiles, no rasters read:
+
+```bash
+conda run -n base python scripts/build_coverage.py --out data/coverage   --s2-tiles E:/post_processing/DATASET/shapefiles/Sentinel_tiles_Caribbean_Sea.shp   --s2-dir   E:/post_processing/DATASET/Caribbean_Sentinel_inferences   --ls-tiles E:/post_processing/DATASET/shapefiles/Landsat_tiles_Caribbean_Sea.shp   --ls-dir   E:/post_processing/DATASET/Caribbean_Landsat_inferences
+```
+
+A tile counts as observed when a scene exists for it that day; clouds and swath edges inside a
+scene are not excluded (the inference rasters carry no nodata band).
+
+To look at freshly built composites/coverage in `npm run dev` before uploading, put
+`VITE_DERIVED_URL=/data/` in `.env.development.local`.
 
 ## Uploading to R2
 
@@ -69,11 +83,11 @@ To look at freshly built composites in `npm run dev` before uploading, put
 
 ```bash
 # everything
-npm run manifest -- --masks E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --composites data/composites --summary data/summary.json --out data/upload-manifest.json
-# only the composites
-npm run manifest -- --composites data/composites --out data/upload-composites.json
+npm run manifest -- --masks E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --composites data/composites --coverage data/coverage --summary data/summary.json --out data/upload-manifest.json
+# only the derived files (composites + coverage)
+npm run manifest -- --composites data/composites --coverage data/coverage --out data/upload-derived.json
 
-npx wrangler r2 bulk put floating-algal-dashboard --filename data/upload-composites.json --remote
+npx wrangler r2 bulk put floating-algal-dashboard --filename data/upload-derived.json --remote
 ```
 
 ## Development
