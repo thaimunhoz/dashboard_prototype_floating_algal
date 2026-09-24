@@ -1,61 +1,71 @@
-# AgriView
+# Floating Algae Atlas
 
-A browser-based satellite time-series viewer for agricultural and environmental monitoring, powered by the [Microsoft Planetary Computer](https://planetarycomputer.microsoft.com/).
+A public web dashboard for browsing daily floating-algae masks (Caribbean Sea) stored as
+shapefiles in a Cloudflare R2 bucket.
 
-## What it does
+- **Timeline** across the top: one bar per day, with height showing bloom area. Click or drag to pick a day, or press play to animate.
+- **Map** (MapLibre GL): dark or satellite basemap, with the day's mask drawn in green.
+- **Side panel**: place search, area/patch stats, and a per-month bloom-area chart (click a bar to jump to that day).
+- **Download** any day's mask as GeoJSON.
 
-AgriView lets you click anywhere on the map and instantly see:
+Stack: Vue 3 · Vite · TypeScript · MapLibre GL · shpjs · Cloudflare Workers + R2.
 
-- **Sentinel-2 imagery** for that location (True Color or False Color)
-- **NDVI time series** — all cloud-masked observations from 2015 to today, plotted as an interactive chart
-- **Climate time series** — daily temperature, precipitation, and evapotranspiration from ERA5 (via Open-Meteo), shown as optional layers
+## How it works
 
-## Features
+```
+browser ──► Cloudflare Worker (worker/index.ts) ──► R2 bucket "floating-algal-dashboard"
+             GET /api/summary          → <prefix>summary.json, or a listing of day folders
+             GET /api/mask/<date>.shp  → <prefix><date>/<date>.shp
+```
 
-### Map
-- Click any point on the globe to open the inspector panel
-- Basemap switcher: Satellite, Terrain, Hybrid
-- Search by place name or lat/lon coordinates
-- Shareable URL — current location and date are encoded in the link
+The Worker reads R2 through a binding (`MASKS` in `wrangler.jsonc`), so no R2 keys are ever
+exposed to the browser. The browser parses the `.shp` with `shpjs` and computes the area.
 
-### Inspector panel (right side)
-- Opens at 50% of the screen when you click the map
-- **Imagery** — zoomable/pannable Sentinel-2 preview tile; palette buttons update the rendering per active layer (True, False, and climate-specific modes)
-- **Available scenes** — list of cloud-free Sentinel-2 acquisitions in the selected date range, sorted newest first; clicking a date updates the imagery
-- **NDVI time series** — scatter chart with cloud masking applied (SCL classes 3, 7–11 excluded); hover any dot to see the exact date and value
+### Expected bucket layout
 
-### Layers panel (▤ button)
-Toggle additional time series in the inspector:
+```
+floating-algal-dashboard/
+  caribbea-sea-masks/            ← MASK_PREFIX in wrangler.jsonc
+    summary.json                 ← optional, from scripts/build-summary.mjs
+    2025-01-01/2025-01-01.shp    (+ .dbf .shx .prj .cpg)
+    2025-01-02/2025-01-02.shp
+    ...
+```
 
-| Layer | Source | Chart |
-|---|---|---|
-| Temperature (2 m) | ERA5 / Open-Meteo | Scatter |
-| Precipitation | ERA5 / Open-Meteo | Bar |
-| Evapotranspiration (ET₀) | ERA5 / Open-Meteo | Scatter |
+## Daily area summary
 
-Each climate chart has palette buttons (3 color options) and a matching imagery card showing the current value on a gradient scale with min/avg/max statistics.
+The timeline and chart need every day's area. Rather than downloading every mask, compute it once:
 
-### Date range
-Use the date pill in the toolbar to pick a preset range (1 y, 2 y, 5 y, full archive) or enter custom start/end dates. All charts update automatically.
+```bash
+npm run summary -- E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS data/summary.json "Caribbean Sea"
+```
 
-## Data sources
+Upload `data/summary.json` to `<MASK_PREFIX>summary.json` in the bucket. Re-run it when you add days.
+Without it, the dashboard still works: the timeline lists the day folders, and each day's area
+is measured when you open it.
 
-| Data | Provider | Notes |
-|---|---|---|
-| Sentinel-2 L2A imagery | Microsoft Planetary Computer | Both 2A and 2B satellites |
-| Sentinel-2 band statistics | PC TiTiler point API | Used to compute NDVI |
-| Climate variables | Open-Meteo archive API | ERA5 reanalysis, daily resolution |
-| Geocoding | OpenStreetMap Nominatim | Place name search |
-
-## Running locally
+## Development
 
 ```bash
 npm install
-npm run dev
+npm run dev          # http://localhost:5173
 ```
 
-Open `http://localhost:5173`.
+By default `npm run dev` uses a **local simulated** R2 bucket. Fill it from your local masks:
 
-## Tech stack
+```bash
+npm run seed:local -- E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS data/summary.json
+```
 
-Vue 3 · Vite · TypeScript · Leaflet · uPlot · Pinia · Cloudflare Workers (deployment)
+To develop against the **real** bucket instead, run `npx wrangler login` once and add
+`"remote": true` to the `r2_buckets` entry in `wrangler.jsonc`.
+
+## Deploy
+
+```bash
+npx wrangler login   # once
+npm run deploy
+```
+
+This publishes the site and the API as the Worker `floating-algal-dashboard` on your
+Cloudflare account, bound to the R2 bucket of the same name.

@@ -1,363 +1,292 @@
 <template>
-  <HomeView v-if="!showWorkspace" @open-workspace="openWorkspace" />
-  <div v-else class="workspace-overlay">
-    <div class="workspace-shell">
-      <AppToolbar @open-settings="showSettings = true" @open-shortcuts="showShortcuts = true" />
-      <button class="workspace-close" title="Back to map" @click="closeWorkspace">Back to map</button>
+  <div class="app" :class="{ collapsed: !state.panelOpen }">
+    <header class="brand">
+      <h1>
+        <span class="l1">Floating</span>
+        <span class="l2">Algae</span>
+        <span class="l3">Atlas</span>
+      </h1>
+      <p class="region">{{ state.summary?.region || 'Caribbean Sea' }}</p>
+    </header>
 
-      <div class="dock-host">
-        <DockviewVue
-          :theme="dockviewTheme"
-          :popout-url="popoutUrl"
-          right-header-actions-component="panelSettingsButton"
-          @ready="onDockviewReady"
-        />
+    <TimelineBar class="top" />
+
+    <aside class="panel">
+      <SearchBox />
+
+      <div class="panel-body">
+        <p v-if="state.summaryError" class="error">{{ state.summaryError }}</p>
+
+        <div class="kpis">
+          <div class="kpi">
+            <span class="k">Bloom area</span>
+            <strong>{{ formatArea(selectedDay?.area_km2) }}<small> km²</small></strong>
+          </div>
+          <div class="kpi">
+            <span class="k">Patches</span>
+            <strong>{{ selectedDay?.patches?.toLocaleString('en-US') ?? '–' }}</strong>
+          </div>
+          <div class="kpi">
+            <span class="k">Days available</span>
+            <strong>{{ days.length || '–' }}</strong>
+          </div>
+        </div>
+
+        <AreaChart />
+
+        <p class="about">
+          Floating algae such as <em>Sargassum</em> have become larger and more frequent across the
+          tropical Atlantic and Caribbean, with impacts on coastal ecosystems, water quality, fisheries
+          and tourism. This dashboard maps daily floating-algae masks derived from satellite
+          observations. Use the timeline to move through time, click a bar to jump to a day, and
+          download any day's mask as GeoJSON.
+        </p>
+
+        <div class="logos">
+          <img src="/logos/nasa-ecr.png" alt="NASA Earth Science Division – Early Career Research" />
+          <img src="/logos/gcer.png" alt="GCER Lab" />
+          <img src="/logos/msstate.png" alt="Mississippi State University" />
+        </div>
       </div>
+    </aside>
 
-      <SettingsModal v-if="showSettings" @close="showSettings = false" />
-      <ShortcutsModal v-if="showShortcuts" @close="showShortcuts = false" />
-    </div>
+    <main class="map-area">
+      <MapView />
+      <button
+        class="collapse"
+        :title="state.panelOpen ? 'Hide panel' : 'Show panel'"
+        :aria-expanded="state.panelOpen"
+        @click="state.panelOpen = !state.panelOpen"
+      >
+        {{ state.panelOpen ? '‹' : '›' }}
+      </button>
+    </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watchEffect, watch, onUnmounted } from 'vue'
-import { DockviewVue, themeReplit } from 'dockview-vue'
+import { onBeforeUnmount, onMounted } from 'vue'
+import TimelineBar from './components/TimelineBar.vue'
+import SearchBox from './components/SearchBox.vue'
+import AreaChart from './components/AreaChart.vue'
+import MapView from './components/MapView.vue'
+import { state, days, selectedDay, loadSummary, step, formatArea } from './state'
 
-const themeReplitDark = {
-  name: 'replit-dark',
-  className: 'dockview-theme-replit-dark',
-  gap: 10,
-}
-import type { DockviewReadyEvent } from 'dockview-vue'
-import AppToolbar from './components/AppToolbar.vue'
-import SettingsModal from './components/SettingsModal.vue'
-import ShortcutsModal from './components/ShortcutsModal.vue'
-import HomeView from './views/HomeView.vue'
-
-import { useAppStore } from './stores/app'
-import { useLayoutStore } from './stores/layout'
-import { useCampaignStore } from './stores/campaign'
-import { parseUrl, serialiseUrl } from './utils/url'
-import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
-import type { CampaignField } from './types/campaign'
-
-const appStore = useAppStore()
-
-// Apply theme attribute to <html> so CSS variables switch instantly
-watch(
-  () => appStore.effectiveTheme,
-  (t) => { document.documentElement.dataset.theme = t === 'light' ? 'light' : '' },
-  { immediate: true }
-)
-
-const dockviewTheme = computed(() => appStore.effectiveTheme === 'light' ? themeReplit : themeReplitDark)
-const popoutUrl = `${import.meta.env.BASE_URL}popout.html`
-const layoutStore = useLayoutStore()
-const campaignStore = useCampaignStore()
-const showSettings = ref(false)
-const showShortcuts = ref(false)
-const showWorkspace = ref(new URLSearchParams(window.location.search).get('workspace') === '1')
-
-useKeyboardShortcuts(() => { showShortcuts.value = !showShortcuts.value })
-
-// Parse URL synchronously during setup, before watchEffect first fires.
-// Campaign data was already loaded from IDB (or ephemerally) by main.ts before mount.
-const parsed = parseUrl(window.location.search)
-if (parsed.lon != null && parsed.lat != null) {
-  appStore.setCoordinate(parsed.lon, parsed.lat)
-}
-if (parsed.start) {
-  appStore.setDateRange(parsed.start, parsed.end ?? appStore.endDate)
-}
-if (parsed.selected) {
-  appStore.setSelectedDate(parsed.selected)
-}
-// Flags come from sample.flags
-if (parsed.sample?.flags) {
-  appStore.setFlags(parsed.sample.flags)
-}
-// flagLabels: prefer campaign schema (already loaded), fall back to URL schema
-if (campaignStore.schema?.flagLabels) {
-  appStore.setFlagLabels(campaignStore.schema.flagLabels)
-} else if (parsed.schema?.flagLabels) {
-  appStore.setFlagLabels(parsed.schema.flagLabels)
-}
-// Form field values: sample minus flags (sample_id stored separately for fallback)
-if (parsed.sample) {
-  const { sample_id, flags: _flags, ...meta } = parsed.sample
-  if (sample_id) appStore.setUrlSampleId(sample_id as string)
-  if (Object.keys(meta).length) appStore.setSampleMeta(meta as Record<string, unknown>)
-}
-
-// Keep flagLabels in sync with the active campaign schema whenever it changes
-// (covers campaign switches, uploads, admin panel edits)
-watch(() => campaignStore.schema?.flagLabels, (fl) => {
-  if (fl) appStore.setFlagLabels(fl)
+onMounted(() => {
+  loadSummary()
+  window.addEventListener('keydown', onKey)
 })
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
-watchEffect(() => {
-  if (!showWorkspace.value) return
-  // Build sample: sample_id + flags + form field values
-  const sampleId = campaignStore.currentSampleId
-
-  const sampleObj: Record<string, unknown> = {}
-  if (sampleId)                            sampleObj.sample_id = sampleId
-  if (Object.keys(appStore.flags).length)  sampleObj.flags     = appStore.flags
-  Object.assign(sampleObj, appStore.sampleMeta)
-
-  // Build schema: full schema when campaign active, flagLabels-only otherwise
-  let schemaObj: { campaign?: string; flagLabels?: Record<string, string>; fields?: CampaignField[] } | undefined
-  if (campaignStore.isActive && campaignStore.schema) {
-    schemaObj = {
-      campaign:   campaignStore.schema.name,
-      flagLabels: campaignStore.schema.flagLabels,
-      fields:     campaignStore.schema.fields,
-    }
-  } else if (Object.keys(appStore.flagLabels).length) {
-    schemaObj = { flagLabels: appStore.flagLabels }
-  }
-
-  const url = serialiseUrl({
-    lon:      appStore.coordinate[0],
-    lat:      appStore.coordinate[1],
-    start:    appStore.startDate,
-    end:      appStore.endDate,
-    selected: appStore.selectedDate,
-    sample:   Object.keys(sampleObj).length ? sampleObj : undefined,
-    schema:   schemaObj,
-  })
-  history.replaceState(null, '', `${url}&workspace=1`)
-})
-
-let saveTimer = 0
-onUnmounted(() => clearTimeout(saveTimer))
-
-function onDockviewReady(event: DockviewReadyEvent) {
-  layoutStore.setApi(event.api)
-
-  if (!layoutStore.loadSavedLayout()) {
-    layoutStore.applyDefault()
-  }
-
-  // Debounced auto-save on any layout change
-  event.api.onDidLayoutChange(() => {
-    clearTimeout(saveTimer)
-    saveTimer = window.setTimeout(() => layoutStore.saveLayout(), 500)
-  })
-
-  // Expose API in dev mode for layout export
-  if (import.meta.env.DEV) {
-    (window as unknown as Record<string, unknown>).__dockview = event.api
-  }
-}
-
-function openWorkspace() {
-  showWorkspace.value = true
-  const url = new URL(window.location.href)
-  url.searchParams.set('workspace', '1')
-  history.replaceState(null, '', url.toString())
-}
-
-function closeWorkspace() {
-  showWorkspace.value = false
-  const url = new URL(window.location.href)
-  url.searchParams.delete('workspace')
-  history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+function onKey(ev: KeyboardEvent) {
+  const t = ev.target as HTMLElement
+  if (t.closest('input, select, textarea')) return
+  if (ev.key === 'ArrowLeft') { state.playing = false; step(-1) }
+  else if (ev.key === 'ArrowRight') { state.playing = false; step(1) }
+  else if (ev.key === ' ' && !t.closest('button')) { ev.preventDefault(); state.playing = !state.playing }
 }
 </script>
 
-<style>
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-html,
-body,
-#app {
-  height: 100%;
-  width: 100%;
-  overflow: hidden;
-  background: var(--bg-base);
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-}
-</style>
-
 <style scoped>
-.workspace-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  background: var(--bg-base);
+.app {
+  --panel-w: 340px;
+  display: grid;
+  grid-template-columns: var(--panel-w) 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    'brand top'
+    'panel map';
+  height: 100vh;
+  height: 100dvh;
+  transition: grid-template-columns 0.25s ease;
+}
+.app.collapsed {
+  grid-template-columns: 0 1fr;
 }
 
-.workspace-shell {
+.brand {
+  grid-area: brand;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  justify-content: center;
+  padding: 14px 20px;
+  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+  overflow: hidden;
+  min-width: 0;
 }
-
-.workspace-close {
-  position: fixed;
-  top: 6px;
-  right: 12px;
-  z-index: 2300;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel-2);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-family: var(--font-ui);
+.collapsed .brand {
+  padding: 0;
+}
+h1 {
+  display: flex;
+  flex-direction: column;
+  line-height: 0.95;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+.l1,
+.l3 {
+  font-size: 30px;
+  font-weight: 800;
+  color: #f4f8ec;
+}
+.l2 {
+  font-size: 30px;
+  font-weight: 500;
+  color: #10220a;
+}
+.region {
+  margin-top: 6px;
   font-size: 12px;
-  padding: 0 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(16, 34, 10, 0.75);
 }
 
-.workspace-close:hover {
-  border-color: var(--accent);
+.top {
+  grid-area: top;
+}
+
+.panel {
+  grid-area: panel;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 90, 90, 0.12);
+  border: 1px solid rgba(255, 90, 90, 0.35);
+  color: #ffb4b4;
+  font-size: 12.5px;
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr;
+  gap: 8px;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.kpi .k {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.kpi strong {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.kpi:first-child strong {
+  color: var(--accent);
+}
+.kpi small {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.about {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.logos {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: 12px;
+  padding-top: 4px;
+}
+.logos img {
+  height: 64px;
+  max-width: 30%;
+  object-fit: contain;
+}
+
+.map-area {
+  grid-area: map;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+}
+.collapse {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 56px;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 16px;
+  cursor: pointer;
+  z-index: 3;
+}
+.collapse:hover {
   color: var(--accent);
 }
 
-.dock-host {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-}
-
-/* DockviewVue renders a plain <div> wrapper around the actual dockview element.
-   Both the wrapper and the dockview root need explicit height so dv-grid-view
-   resolves 100% against a non-zero parent. */
-.dock-host > div,
-.dock-host :deep([class*="dockview-theme"]) {
-  height: 100%;
-}
-
-/* ── Dark Replit theme ─────────────────────────────────────────── */
-:global(.dockview-theme-replit-dark) {
-  --dv-paneview-active-outline-color: #36E2A4;
-  --dv-tabs-and-actions-container-font-size: 13px;
-  --dv-tabs-and-actions-container-height: 35px;
-  --dv-drag-over-background-color: rgba(54, 226, 164, 0.15);
-  --dv-drag-over-border-color: transparent;
-  --dv-tabs-container-scrollbar-color: #3c4140;
-  --dv-icon-hover-background-color: rgba(67, 72, 70, 0.5);
-  --dv-floating-box-shadow: 8px 8px 8px 0px rgba(0, 0, 0, 0.5);
-  --dv-overlay-z-index: 999;
-  --dv-tab-font-size: inherit;
-  --dv-border-radius: 0px;
-  --dv-tab-margin: 0;
-  --dv-sash-color: #1a1b1b;
-  --dv-active-sash-color: #36E2A4;
-  --dv-active-sash-transition-duration: 0.1s;
-  --dv-active-sash-transition-delay: 0.5s;
-
-  box-sizing: border-box;
-  padding: 10px;
-  background-color: var(--bg-base);
-
-  --dv-group-view-background-color: var(--bg-base);
-  --dv-tabs-and-actions-container-background-color: var(--bg-panel);
-  --dv-activegroup-visiblepanel-tab-background-color: var(--bg-panel-2);
-  --dv-activegroup-hiddenpanel-tab-background-color: var(--bg-panel);
-  --dv-inactivegroup-visiblepanel-tab-background-color: #101724;
-  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg-panel);
-  --dv-tab-divider-color: transparent;
-  --dv-activegroup-visiblepanel-tab-color: var(--text-primary);
-  --dv-activegroup-hiddenpanel-tab-color: var(--text-muted);
-  --dv-inactivegroup-visiblepanel-tab-color: var(--text-secondary);
-  --dv-inactivegroup-hiddenpanel-tab-color: var(--text-muted);
-  --dv-separator-border: transparent;
-  --dv-paneview-header-border-color: var(--border);
-}
-
-:global(.dockview-theme-replit-dark .dv-resize-container) {
-  border-radius: 10px !important;
-  border: none;
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview) {
-  overflow: hidden;
-  border-radius: 10px;
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview .dv-tabs-and-actions-container) {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview .dv-tabs-and-actions-container .dv-tab) {
-  margin: 4px;
-  border-radius: 8px;
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview .dv-tabs-and-actions-container .dv-tab .dv-svg) {
-  height: 8px;
-  width: 8px;
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview .dv-tabs-and-actions-container .dv-tab:hover) {
-  background-color: var(--bg-panel-2) !important;
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview .dv-content-container) {
-  background-color: var(--bg-base);
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview.dv-active-group) {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-:global(.dockview-theme-replit-dark .dv-groupview.dv-inactive-group) {
-  border: 1px solid transparent;
-}
-
-:global(.dockview-theme-replit-dark .dv-vertical > .dv-sash-container > .dv-sash) {
-  background-color: transparent;
-}
-:global(.dockview-theme-replit-dark .dv-vertical > .dv-sash-container > .dv-sash:not(.disabled)::after) {
-  content: '';
-  position: absolute;
-  height: 4px;
-  width: 40px;
-  border-radius: 2px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background-color: var(--dv-sash-color);
-}
-:global(.dockview-theme-replit-dark .dv-vertical > .dv-sash-container > .dv-sash:not(.disabled):hover),
-:global(.dockview-theme-replit-dark .dv-vertical > .dv-sash-container > .dv-sash:not(.disabled):active) {
-  background-color: transparent;
-}
-:global(.dockview-theme-replit-dark .dv-vertical > .dv-sash-container > .dv-sash:not(.disabled):hover::after),
-:global(.dockview-theme-replit-dark .dv-vertical > .dv-sash-container > .dv-sash:not(.disabled):active::after) {
-  background-color: var(--dv-active-sash-color);
-}
-
-:global(.dockview-theme-replit-dark .dv-horizontal > .dv-sash-container > .dv-sash) {
-  background-color: transparent;
-}
-:global(.dockview-theme-replit-dark .dv-horizontal > .dv-sash-container > .dv-sash:not(.disabled)::after) {
-  content: '';
-  position: absolute;
-  height: 40px;
-  width: 4px;
-  border-radius: 2px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background-color: var(--dv-sash-color);
-}
-:global(.dockview-theme-replit-dark .dv-horizontal > .dv-sash-container > .dv-sash:not(.disabled):hover),
-:global(.dockview-theme-replit-dark .dv-horizontal > .dv-sash-container > .dv-sash:not(.disabled):active) {
-  background-color: transparent;
-}
-:global(.dockview-theme-replit-dark .dv-horizontal > .dv-sash-container > .dv-sash:not(.disabled):hover::after),
-:global(.dockview-theme-replit-dark .dv-horizontal > .dv-sash-container > .dv-sash:not(.disabled):active::after) {
-  background-color: var(--dv-active-sash-color);
+@media (max-width: 800px) {
+  .app,
+  .app.collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 65vh auto;
+    grid-template-areas:
+      'brand'
+      'top'
+      'map'
+      'panel';
+    height: auto;
+  }
+  .brand {
+    padding: 12px 16px;
+  }
+  h1 {
+    flex-direction: row;
+    gap: 8px;
+  }
+  .l1,
+  .l2,
+  .l3 {
+    font-size: 22px;
+  }
+  .panel {
+    border-right: 0;
+  }
+  .panel-body {
+    overflow: visible;
+  }
+  .collapse {
+    display: none;
+  }
 }
 </style>
