@@ -89,23 +89,10 @@ import { state, selectedPeriod as sel, loadSummary, step, formatArea, formatDay,
 
 const periodLength = computed(() => (sel.value ? (toMs(sel.value.end) - toMs(sel.value.start)) / 86_400_000 + 1 : 0))
 
-// Welcome page: shown on a browser's first visit, reopened from the (i) button.
-const WELCOME_KEY = 'faa-welcome-seen'
-const showWelcome = ref(!readSeen())
-function readSeen() {
-  try {
-    return localStorage.getItem(WELCOME_KEY) === '1'
-  } catch {
-    return false
-  }
-}
+// Welcome page: shown on every page load, reopened from the (i) button.
+const showWelcome = ref(true)
 function closeWelcome() {
   showWelcome.value = false
-  try {
-    localStorage.setItem(WELCOME_KEY, '1')
-  } catch {
-    // storage unavailable (private mode): the page just shows again next visit
-  }
 }
 
 onMounted(() => {

@@ -3,7 +3,7 @@
 A public web dashboard for browsing daily floating-algae masks (Caribbean Sea) stored as
 shapefiles in a Cloudflare R2 bucket.
 
-- **Welcome page** on a visitor's first visit (reopen with the ⓘ button in the title).
+- **Welcome page** on every page load (reopen with the ⓘ button in the title).
 - **Daily / Weekly / Monthly** switch. Daily shows each day's mask; weekly (ISO, Mon–Sun) and monthly show frequency composites: every ~500 m cell coloured by the number of days algae were detected in it.
 - **Timeline** across the top: one bar per day, week or month, with height showing bloom area (mean daily area for weeks and months). Click or drag to pick one, or press play to animate.
 - **Map** (MapLibre GL): dark or satellite basemap. In daily mode, the area observed that day (Sentinel-2 tiles, plus Landsat footprints split on the S2 grid) is shaded underneath the masks, so "no algae" can be told apart from "not imaged".
