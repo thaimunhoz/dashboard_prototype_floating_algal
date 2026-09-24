@@ -5,16 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "dev:public": "vite --mode vercel",
+    "build:vercel": "vue-tsc --noEmit -p tsconfig.app.json && vite build --mode vercel",
+    "build": "npm run typecheck && vite build",
     "preview": "npm run build && vite preview",
-    "typecheck": "vue-tsc -b",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && vue-tsc --noEmit -p tsconfig.worker.json && vue-tsc --noEmit -p tsconfig.node.json",
     "summary": "node scripts/build-summary.mjs",
     "seed:local": "node scripts/seed-local-r2.mjs",
+    "manifest": "node scripts/make-upload-manifest.mjs",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types worker/worker-configuration.d.ts"
   },
   "dependencies": {
-    "maplibre-gl": "^5.6.0",
+    "maplibre-gl": "^6.11.2",
     "shpjs": "^6.1.0",
     "vue": "^3.5.0"
   },

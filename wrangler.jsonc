@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "floating-algal-dashboard",
+  // Cloudflare account that owns the R2 bucket (not a secret).
+  "account_id": "95930a4664cd6b5c3545b30ed92d266e",
   "main": "worker/index.ts",
   "compatibility_date": "2025-09-27",
   "observability": {
@@ -14,10 +16,10 @@
   "r2_buckets": [
     {
       "binding": "MASKS",
-      "bucket_name": "floating-algal-dashboard"
-      // Set "remote": true to read the real bucket during `npm run dev`
-      // (requires `npx wrangler login`). Without it, dev uses a local
-      // simulated bucket seeded by `npm run seed:local`.
+      "bucket_name": "floating-algal-dashboard",
+      // true: `npm run dev` reads the real bucket (requires `npx wrangler login`).
+      // false: dev uses a local simulated bucket seeded by `npm run seed:local`.
+      "remote": true
     }
   ],
   "vars": {

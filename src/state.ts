@@ -1,5 +1,6 @@
 import { reactive, computed } from 'vue'
 import type { DaySummary, SummaryResponse } from '../shared/types'
+import { summaryUrl } from './dataSource'
 
 /** Single shared store for the dashboard (small enough not to need Pinia). */
 export const state = reactive({
@@ -48,9 +49,11 @@ export function step(delta: number) {
 
 export async function loadSummary() {
   try {
-    const res = await fetch('/api/summary')
+    const res = await fetch(summaryUrl)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const summary = (await res.json()) as SummaryResponse
+    // summary.json read directly from the bucket always carries areas; the Worker sets the flag itself.
+    summary.hasAreas ??= true
     state.summary = summary
     if (!summary.days.length) {
       state.summaryError = 'No daily masks found in the bucket.'

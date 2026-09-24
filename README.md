@@ -60,7 +60,19 @@ npm run seed:local -- E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS data/summary.
 To develop against the **real** bucket instead, run `npx wrangler login` once and add
 `"remote": true` to the `r2_buckets` entry in `wrangler.jsonc`.
 
-## Deploy
+## Deploy on Vercel (static site + public bucket)
+
+The bucket is public at `https://pub-78e45d7d1b8f4e41ab06d26727276385.r2.dev`. In this mode
+the page reads `summary.json` and the `.shp` files straight from it (`VITE_DATA_URL` in
+`.env.vercel`), and no Worker is involved.
+
+1. Import the GitHub repo in Vercel. `vercel.json` already sets the build (`vite build --mode vercel`, output `dist`).
+2. Allow the Vercel domain to read the bucket: put it in `r2-cors.json`, then
+   `npx wrangler r2 bucket cors set floating-algal-dashboard --file r2-cors.json`.
+
+To try this mode locally: `npm run dev:public` (needs `http://localhost:5173` in the CORS rules).
+
+## Deploy on Cloudflare Workers
 
 ```bash
 npx wrangler login   # once

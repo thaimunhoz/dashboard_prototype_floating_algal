@@ -34,8 +34,12 @@
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
-import maplibregl, { type GeoJSONSource, type Map as MLMap } from 'maplibre-gl'
+import * as maplibregl from 'maplibre-gl'
+import type { GeoJSONSource, Map as MLMap } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+// MapLibre locates its worker next to its own module, which Vite's bundling breaks;
+// let Vite build the worker and hand MapLibre the resulting URL.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { state, days, formatDate } from '../state'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
 
@@ -44,6 +48,10 @@ const WATER = '#0d1540'
 const MASK = '#9be22f'
 // Caribbean Sea; replaced by the data bbox once the summary arrives.
 const DEFAULT_BOUNDS: [number, number, number, number] = [-88, 8, -58, 25]
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
+// Basemap tiles and the (large) mask GeoJSON share the worker pool; one worker makes both wait.
+maplibregl.setWorkerCount(Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) >> 1)))
 
 const container = ref<HTMLDivElement>()
 const map = shallowRef<MLMap>()
@@ -66,7 +74,8 @@ onMounted(() => {
   m.addControl(new maplibregl.FullscreenControl(), 'top-right')
   m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
 
-  m.on('load', () => {
+  // 'style.load' rather than 'load': 'load' waits for every basemap tile, so one slow tile would delay the masks.
+  m.once('style.load', () => {
     const layers = m.getStyle().layers
     // Deep navy water so the green masks pop, as in the reference atlas.
     for (const l of layers) {
@@ -85,32 +94,54 @@ onMounted(() => {
     })
     m.addLayer({ id: 'satellite', type: 'raster', source: 'satellite', layout: { visibility: 'none' } }, firstLabel)
 
-    m.addSource('mask', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-    // Masks are small slicks; a thick blurred outline keeps them visible when zoomed out.
+    const empty = { type: 'FeatureCollection' as const, features: [] }
+    m.addSource('mask', { type: 'geojson', data: empty })
+    m.addSource('mask-points', { type: 'geojson', data: empty })
+
+    // Most patches are far smaller than a pixel at regional zoom and get dropped
+    // when tiled, so show a glowing dot per patch until the polygons take over.
     m.addLayer({
-      id: 'mask-glow',
-      type: 'line',
-      source: 'mask',
+      id: 'mask-dots-glow',
+      type: 'circle',
+      source: 'mask-points',
+      maxzoom: 9,
       paint: {
-        'line-color': MASK,
-        'line-opacity': 0.45,
-        'line-blur': 2,
-        'line-width': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 2, 12, 0.5],
+        'circle-color': MASK,
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 6],
+        'circle-blur': 1,
+        'circle-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.35, 9, 0],
+      },
+    }, firstLabel)
+    m.addLayer({
+      id: 'mask-dots',
+      type: 'circle',
+      source: 'mask-points',
+      maxzoom: 9,
+      paint: {
+        'circle-color': MASK,
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 1, 8, 2],
+        'circle-opacity': ['interpolate', ['linear'], ['zoom'], 7, 1, 9, 0],
       },
     }, firstLabel)
     m.addLayer({
       id: 'mask-fill',
       type: 'fill',
       source: 'mask',
-      paint: { 'fill-color': MASK, 'fill-opacity': 0.9 },
+      minzoom: 6,
+      paint: {
+        'fill-color': MASK,
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0, 8, 0.9],
+      },
     }, firstLabel)
     m.addLayer({
       id: 'mask-line',
       type: 'line',
       source: 'mask',
+      minzoom: 6,
       paint: {
         'line-color': MASK,
-        'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1.2, 10, 0.6],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 0.6],
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0, 8, 1],
       },
     }, firstLabel)
 
@@ -119,6 +150,7 @@ onMounted(() => {
   })
 
   map.value = m
+  if (import.meta.env.DEV) (window as unknown as { __map: MLMap }).__map = m
 })
 
 onBeforeUnmount(() => map.value?.remove())
@@ -126,6 +158,7 @@ onBeforeUnmount(() => map.value?.remove())
 function setMaskData(mask: LoadedMask) {
   if (!styleReady) return
   ;(map.value?.getSource('mask') as GeoJSONSource | undefined)?.setData(mask.geojson)
+  ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask.points)
 }
 
 // Load the mask whenever the selected date changes; ignore stale responses.
