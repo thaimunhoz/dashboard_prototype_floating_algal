@@ -6,6 +6,7 @@ shapefiles in a Cloudflare R2 bucket.
 - **Welcome page** on every page load (reopen with the ⓘ button in the title).
 - **Daily / Weekly / Monthly** switch. Daily shows each day's mask; weekly (ISO, Mon–Sun) and monthly show frequency composites: every ~500 m cell coloured by the number of days algae were detected in it.
 - **Timeline** across the top: one bar per day, week or month, with height showing bloom area (mean daily area for weeks and months). Click or drag to pick one, or press play to animate.
+- **Map view mode** (on by default): when zoomed in, the timeline and chart show the area inside the current view, summed from the 4 km cell data; days when nothing in view was imaged are marked "not imaged" instead of zero.
 - **Map** (MapLibre GL): dark or satellite basemap. In daily mode, the area observed that day (Sentinel-2 tiles, plus Landsat footprints split on the S2 grid) is shaded underneath the masks, so "no algae" can be told apart from "not imaged".
 - **Side panel**: place search and a bloom-area chart with month/year pickers (click a bar to jump there).
 - **4 km cell time series**: zoomed in (zoom ≥ 6), click anywhere on the sea to see the daily algal bloom area in that fishnet cell, with observed-but-clear days and unobserved days told apart.
@@ -94,15 +95,36 @@ To look at freshly built composites/coverage/cells in `npm run dev` before uploa
 
 ## Uploading to R2
 
-`scripts/make-upload-manifest.mjs` lists files for `wrangler r2 bulk put`:
+The daily masks now live in `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/CARIBBEAN_SEA`
+(one `<YYYY-MM-DD>/<YYYY-MM-DD>.*` folder per day).
+
+### Updating after masks change
+
+`scripts/sync-r2.mjs` uploads only files whose content changed. It keeps an MD5 per R2 key in
+`data/r2-state.json` (R2 reports the same MD5 as each object's ETag).
 
 ```bash
-# everything
-npm run manifest -- --masks E:/post_processing/CARIBBEAN_SEA/DAILY_MASKS --composites data/composites --coverage data/coverage --cells data/cells --summary data/summary.json --out data/upload-manifest.json
-# only the derived files (composites + coverage + cells)
-npm run manifest -- --composites data/composites --coverage data/coverage --cells data/cells --out data/upload-derived.json
+# 1. rebuild everything that depends on the masks (coverage only changes when scenes are added)
+npm run summary -- Z:/.../CARIBBEAN_SEA data/summary.json "Caribbean Sea"
+conda run -n base python scripts/build_composites.py Z:/.../CARIBBEAN_SEA data/composites
+conda run -n base python scripts/build_cells.py --fishnet Z:/.../caribbean_4km_fishnet.shp   --masks Z:/.../CARIBBEAN_SEA --coverage data/coverage --out data/cells
 
-npx wrangler r2 bulk put floating-algal-dashboard --filename data/upload-derived.json --remote
+# 2. see what changed (dry run), then upload it
+npm run sync -- --masks Z:/.../CARIBBEAN_SEA --summary data/summary.json   --composites data/composites --coverage data/coverage --cells data/cells
+npm run sync -- --masks Z:/.../CARIBBEAN_SEA --summary data/summary.json   --composites data/composites --coverage data/coverage --cells data/cells --upload
+```
+
+The state is only updated after a successful upload, so a failed run can simply be repeated.
+If `data/r2-state.json` is lost, recreate it with the same sources and `--init` (records the local
+files as already uploaded; only do this when they match the bucket).
+
+### First upload / everything
+
+`scripts/make-upload-manifest.mjs` lists every file for `wrangler r2 bulk put`:
+
+```bash
+npm run manifest -- --masks Z:/.../CARIBBEAN_SEA --composites data/composites --coverage data/coverage --cells data/cells --summary data/summary.json --out data/upload-manifest.json
+npx wrangler r2 bulk put floating-algal-dashboard --filename data/upload-manifest.json --remote
 ```
 
 ## Development

@@ -22,6 +22,10 @@
       </div>
     </header>
 
+    <p v-if="state.followView && state.viewSeries" class="note view-note">
+      In the current map view ({{ state.viewSeries.cells.toLocaleString('en-US') }} cells of 4 km).
+      Zoom out to see the whole region.
+    </p>
     <p v-if="!state.summary?.hasAreas" class="note">
       Areas are measured as each day is opened. Run the summary script to show every day at once.
     </p>
@@ -30,14 +34,14 @@
       <li
         v-for="r in rows"
         :key="r.id"
-        :class="{ sel: r.id === state.selectedId }"
+        :class="{ sel: r.id === state.selectedId, unobs: r.unobs }"
         :title="r.title"
         @click="selectPeriod(r.id)"
       >
         <span class="d">{{ r.label }}</span>
         <span class="bar-wrap">
           <span class="bar" :style="{ width: `${r.pct}%` }" />
-          <span class="v">{{ r.area == null ? '' : formatArea(r.area) }}</span>
+          <span class="v">{{ r.unobs ? 'not imaged' : r.area == null ? '' : formatArea(r.area) }}</span>
         </span>
       </li>
     </ol>
@@ -123,12 +127,14 @@ const rows = computed(() => {
     label: rowLabel(p),
     title: state.mode === 'daily' ? '' : `${formatPeriod(p, state.mode)} · ${p.days} day${p.days === 1 ? '' : 's'} with data`,
     pct: p.area_km2 && max ? Math.max(1.5, (p.area_km2 / max) * 100) : 0,
+    unobs: p.observed === 0,
   }))
 })
 
 const stats = computed(() => {
   if (!state.summary?.hasAreas) return null
-  const inGroup = periods.value.filter((p) => groupOf(p) === group.value && p.area_km2 != null)
+  // Days when nothing in view was imaged (map-view mode) are left out of the mean.
+  const inGroup = periods.value.filter((p) => groupOf(p) === group.value && p.area_km2 != null && p.observed !== 0)
   if (!inGroup.length) return null
   // Peak single day, and mean daily area weighted by days with data.
   const peak = inGroup.reduce<{ area: number; label: string } | null>((best, p) => {
@@ -273,6 +279,13 @@ h2 {
 .v {
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
+}
+.unobs .v {
+  color: var(--text-3);
+  font-style: italic;
+}
+.view-note {
+  color: #b9c6ff;
 }
 
 footer {

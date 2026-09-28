@@ -13,6 +13,7 @@
     "summary": "node scripts/build-summary.mjs",
     "seed:local": "node scripts/seed-local-r2.mjs",
     "manifest": "node scripts/make-upload-manifest.mjs",
+    "sync": "node scripts/sync-r2.mjs",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types worker/worker-configuration.d.ts"
   },

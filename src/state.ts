@@ -1,6 +1,7 @@
-import { reactive, computed } from 'vue'
+import { reactive, computed, markRaw } from 'vue'
 import type { SummaryResponse } from '../shared/types'
 import { summaryUrl, compositeUrl, coverageUrl } from './dataSource'
+import type { ViewSeries } from './cells'
 
 export type Mode = 'daily' | 'weekly' | 'monthly'
 export const MODES: Mode[] = ['daily', 'weekly', 'monthly']
@@ -18,6 +19,8 @@ export interface Period {
   /** Days with a mask in the period. */
   days: number
   peak: { date: string; area_km2: number } | null
+  /** Daily, map-view mode only: share of the view that was observed that day (0–1). */
+  observed?: number
 }
 
 /** Written by scripts/build_composites.py next to each composite set. */
@@ -55,7 +58,16 @@ export const state = reactive({
   /** Set by the search box; MapView flies there and clears it. */
   flyTo: null as { bbox?: [number, number, number, number]; center?: [number, number] } | null,
   panelOpen: true,
+  /** Timeline and chart follow the map view (sum of the 4 km cells in view) when zoomed in. */
+  followView: true,
+  /** Totals for the current map view; null = whole region (the daily summary is used). */
+  viewSeries: null as ViewSeries | null,
+  viewLoading: false,
 })
+
+export function setViewSeries(v: ViewSeries | null) {
+  state.viewSeries = v ? markRaw(v) : null
+}
 
 // ── periods ───────────────────────────────────────────────────────
 const DAY_MS = 86_400_000
@@ -79,30 +91,42 @@ export function periodOf(iso: string, mode: Mode): { id: string; start: string; 
   return { id: `${year}-W${String(week).padStart(2, '0')}`, start: toIso(monday), end: toIso(monday + 6 * DAY_MS) }
 }
 
-const dailyPeriods = computed<Period[]>(() =>
-  (state.summary?.days ?? []).map((d) => {
-    const live = d.area_km2 == null && state.liveStats?.date === d.date ? state.liveStats : null
-    const area = d.area_km2 ?? live?.area_km2 ?? null
-    return {
-      id: d.date,
-      start: d.date,
-      end: d.date,
-      area_km2: area,
-      patches: d.patches ?? live?.patches ?? null,
-      days: 1,
-      peak: area != null ? { date: d.date, area_km2: area } : null,
+/** Per-day values the timeline and chart use: whole region, or the current map view. */
+const dayValues = computed(() => {
+  const view = state.followView ? state.viewSeries : null
+  const index = view ? new Map(view.dates.map((d, i) => [d, i])) : null
+  return (state.summary?.days ?? []).map((d) => {
+    if (view && index) {
+      const i = index.get(d.date)
+      return { date: d.date, area_km2: i == null ? null : view.area[i], patches: null, observed: i == null ? 0 : view.observed[i] }
     }
-  }),
+    const live = d.area_km2 == null && state.liveStats?.date === d.date ? state.liveStats : null
+    return { date: d.date, area_km2: d.area_km2 ?? live?.area_km2 ?? null, patches: d.patches ?? live?.patches ?? null, observed: undefined }
+  })
+})
+
+const dailyPeriods = computed<Period[]>(() =>
+  dayValues.value.map((d) => ({
+    id: d.date,
+    start: d.date,
+    end: d.date,
+    area_km2: d.area_km2,
+    patches: d.patches,
+    days: 1,
+    peak: d.area_km2 != null ? { date: d.date, area_km2: d.area_km2 } : null,
+    observed: d.observed,
+  })),
 )
 
 function groupPeriods(mode: 'weekly' | 'monthly'): Period[] {
   const out = new Map<string, Period & { sum: number; known: number }>()
-  for (const d of state.summary?.days ?? []) {
+  for (const d of dayValues.value) {
     const p = periodOf(d.date, mode)
     let g = out.get(p.id)
     if (!g) out.set(p.id, (g = { ...p, area_km2: null, patches: null, days: 0, peak: null, sum: 0, known: 0 }))
     g.days++
-    if (d.area_km2 != null) {
+    // In map-view mode, days when nothing in view was imaged don't count towards the mean.
+    if (d.area_km2 != null && d.observed !== 0) {
       g.sum += d.area_km2
       g.known++
       if (!g.peak || d.area_km2 > g.peak.area_km2) g.peak = { date: d.date, area_km2: d.area_km2 }

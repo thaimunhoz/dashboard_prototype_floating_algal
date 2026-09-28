@@ -92,3 +92,59 @@ export async function loadCellSeries(grid: Grid, cell: CellRef): Promise<CellSer
   for (let i = 1; i < entry.length; i += 2) values[entry[i]] = entry[i + 1]
   return { cell, dates: grid.dates, values }
 }
+
+/** Daily totals for the grid cells whose centre lies inside a lon/lat box. */
+export interface ViewSeries {
+  dates: string[]
+  /** Algal bloom area per day, km², summed over the cells in view. */
+  area: number[]
+  /** Share of the cells in view that were observed each day (0–1). */
+  observed: number[]
+  cells: number
+}
+
+/**
+ * Sums the per-cell series over a map view. Only the 64x64 blocks touching the view are
+ * fetched (cached). Cells sharing an observation pattern are counted once per pattern.
+ */
+export async function loadViewSeries(grid: Grid, [w, s, e, n]: [number, number, number, number]): Promise<ViewSeries> {
+  // Cell rows/cols whose centre is inside the view.
+  const c0 = Math.max(0, Math.ceil((lonToX(w) - grid.x0) / grid.cell - 0.5))
+  const c1 = Math.min(grid.cols - 1, Math.floor((lonToX(e) - grid.x0) / grid.cell - 0.5))
+  const r0 = Math.max(0, Math.ceil((grid.y0 - latToY(Math.min(n, 85))) / grid.cell - 0.5))
+  const r1 = Math.min(grid.rows - 1, Math.floor((grid.y0 - latToY(Math.max(s, -85))) / grid.cell - 0.5))
+
+  const nd = grid.dates.length
+  const area = new Array<number>(nd).fill(0)
+  const obsCount = new Array<number>(nd).fill(0)
+  let cells = 0
+  if (c0 > c1 || r0 > r1) return { dates: grid.dates, area, observed: obsCount, cells }
+
+  const names: string[] = []
+  for (let br = Math.floor(r0 / grid.chunk); br <= Math.floor(r1 / grid.chunk); br++) {
+    for (let bc = Math.floor(c0 / grid.chunk); bc <= Math.floor(c1 / grid.chunk); bc++) {
+      if (grid.chunks.includes(`${br}_${bc}`)) names.push(`${br}_${bc}`)
+    }
+  }
+  const chunks = await Promise.all(names.map(loadChunk))
+
+  for (const chunk of chunks) {
+    if (!chunk) continue
+    const perPattern = new Map<number, number>()
+    for (const key in chunk.cells) {
+      const sep = key.indexOf('_')
+      const r = +key.slice(0, sep)
+      const c = +key.slice(sep + 1)
+      if (r < r0 || r > r1 || c < c0 || c > c1) continue
+      const entry = chunk.cells[key]
+      cells++
+      perPattern.set(entry[0], (perPattern.get(entry[0]) ?? 0) + 1)
+      for (let i = 1; i < entry.length; i += 2) area[entry[i]] += entry[i + 1]
+    }
+    for (const [pat, count] of perPattern) {
+      const bits = Uint8Array.from(atob(chunk.patterns[pat]), (ch) => ch.charCodeAt(0))
+      for (let d = 0; d < nd; d++) if ((bits[d >> 3] >> (7 - (d & 7))) & 1) obsCount[d] += count
+    }
+  }
+  return { dates: grid.dates, area, observed: obsCount.map((k) => (cells ? k / cells : 0)), cells }
+}

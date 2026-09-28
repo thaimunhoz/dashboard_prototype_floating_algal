@@ -30,10 +30,28 @@
       <div class="current">
         <span class="dot" :class="{ busy: state.maskLoading }" />
         <strong>{{ selectedPeriod ? formatPeriod(selectedPeriod, state.mode) : '—' }}</strong>
-        <span v-if="selectedPeriod?.area_km2 != null" class="muted">
+        <span v-if="selectedPeriod?.observed === 0" class="muted">· not imaged in view</span>
+        <span v-else-if="selectedPeriod?.area_km2 != null" class="muted">
           · {{ formatArea(selectedPeriod.area_km2) }} km²{{ state.mode === 'daily' ? '' : ' / day' }}
         </span>
+        <span v-if="inView" class="scope-tag">in map view</span>
       </div>
+
+      <button
+        class="scope"
+        :class="{ on: state.followView }"
+        :aria-pressed="state.followView"
+        :title="state.followView
+          ? 'Bars show the algal bloom area inside the current map view (zoom in to focus). Click to always show the whole region.'
+          : 'Bars show the whole region. Click to follow the map view.'"
+        @click="state.followView = !state.followView"
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Map view
+        <span v-if="state.viewLoading" class="mini-spin" />
+      </button>
 
       <div class="speed">
         <label for="speed">Speed</label>
@@ -60,7 +78,7 @@
           :y="100 - b.h"
           :width="Math.max(0.1, b.w - 2 * b.gap)"
           :height="b.h"
-          :class="{ sel: b.id === state.selectedId, empty: b.empty }"
+          :class="{ sel: b.id === state.selectedId, empty: b.empty, unobs: b.unobs }"
         />
       </svg>
       <div
@@ -74,10 +92,14 @@
       <div v-if="hover" class="tip" :style="{ left: `${(hover.x / span) * 100}%` }">
         <template v-if="hover.period">
           <strong>{{ formatPeriod(hover.period, state.mode) }}</strong>
-          <span v-if="hover.period.area_km2 != null">
+          <span v-if="hover.period.observed === 0" class="muted">not imaged in this view</span>
+          <span v-else-if="hover.period.area_km2 != null">
             {{ formatArea(hover.period.area_km2) }} km²{{ state.mode === 'daily' ? '' : ' mean per day' }}
           </span>
           <span v-else>mask available</span>
+          <span v-if="hover.period.observed != null && hover.period.observed > 0 && hover.period.observed < 0.995" class="muted">
+            {{ Math.round(hover.period.observed * 100) }}% of view imaged
+          </span>
         </template>
         <template v-else>
           <strong>{{ formatDate(hover.date) }}</strong>
@@ -97,6 +119,7 @@ import {
 
 const DAY_MS = 86_400_000
 const MODE_LABEL: Record<Mode, string> = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }
+const inView = computed(() => state.followView && !!state.viewSeries)
 const unit = computed(() => ({ daily: 'day', weekly: 'week', monthly: 'month' })[state.mode])
 
 const track = ref<HTMLDivElement>()
@@ -122,7 +145,10 @@ const bars = computed(() => {
     // sqrt scale: bloom areas span several orders of magnitude.
     let h = 22
     if (p.area_km2 != null && max > 0) h = p.area_km2 > 0 ? 6 + 94 * Math.sqrt(p.area_km2 / max) : 3
-    return { id: p.id, ...extent(p), h, gap, empty: p.area_km2 === 0 }
+    // Nothing in view was imaged that day: a faint full-height stub instead of a zero.
+    const unobs = p.observed === 0
+    if (unobs) h = 100
+    return { id: p.id, ...extent(p), h, gap, empty: p.area_km2 === 0 && !unobs, unobs }
   })
 })
 
@@ -220,7 +246,7 @@ onBeforeUnmount(() => clearTimeout(timer))
 
 .tl-head {
   display: grid;
-  grid-template-columns: auto auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto auto;
   align-items: center;
   gap: 16px;
 }
@@ -361,6 +387,50 @@ onBeforeUnmount(() => clearTimeout(timer))
 .bars rect.sel {
   fill: var(--accent);
 }
+.bars rect.unobs {
+  fill: rgba(143, 166, 255, 0.07);
+}
+.bars rect.unobs.sel {
+  fill: rgba(143, 166, 255, 0.3);
+}
+.scope-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(143, 166, 255, 0.5);
+  color: #b9c6ff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.scope.on {
+  color: var(--text-1);
+  border-color: rgba(143, 166, 255, 0.6);
+}
+.mini-spin {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--line);
+  border-top-color: #b9c6ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 .sel-band {
   position: absolute;
   top: -1px;
@@ -410,7 +480,7 @@ onBeforeUnmount(() => clearTimeout(timer))
     display: none;
   }
   .tl-head {
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: auto auto 1fr auto;
   }
 }
 @media (max-width: 700px) {

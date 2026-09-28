@@ -95,8 +95,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre locates its worker next to its own module, which Vite's bundling breaks;
 // let Vite build the worker and hand MapLibre the resulting URL.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
-import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod } from '../state'
-import { loadGrid, cellAt, loadCellSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
+import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod, setViewSeries } from '../state'
+import { loadGrid, cellAt, loadCellSeries, loadViewSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
 import CellSeries from './CellSeries.vue'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
 import { compositeUrl, coverageUrl } from '../dataSource'
@@ -263,7 +263,16 @@ onMounted(() => {
 
   zoom.value = m.getZoom()
   m.on('zoom', () => { zoom.value = m.getZoom() })
-  loadGrid().then((g) => { grid = g; gridReady.value = !!g })
+  loadGrid().then((g) => {
+    grid = g
+    gridReady.value = !!g
+    updateView()
+  })
+  let viewTimer = 0
+  m.on('moveend', () => {
+    clearTimeout(viewTimer)
+    viewTimer = window.setTimeout(updateView, 250)
+  })
   m.on('mousemove', onCellHover)
   m.on('mouseout', () => setCellOutline('cell-hover', null))
   m.on('click', onCellClick)
@@ -279,6 +288,32 @@ function setMaskData(mask: LoadedMask) {
   ;(map.value?.getSource('mask') as GeoJSONSource | undefined)?.setData(mask.geojson)
   ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask.points)
 }
+
+// ── timeline follows the map view ─────────────────────────────────
+// When the whole region is in view the regional daily totals are used; otherwise the
+// 4 km cells in view are summed (scripts/build_cells.py), so the bars match what's on screen.
+let viewToken = 0
+async function updateView() {
+  const m = map.value
+  const bbox = state.summary?.bbox
+  const b = m?.getBounds()
+  const view: [number, number, number, number] | null = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] : null
+  const tol = 0.25 // degrees
+  const wholeRegion = !view || !bbox ||
+    (view[0] <= bbox[0] + tol && view[1] <= bbox[1] + tol && view[2] >= bbox[2] - tol && view[3] >= bbox[3] - tol)
+  const my = ++viewToken
+  if (!state.followView || !grid || wholeRegion) {
+    setViewSeries(null)
+    state.viewLoading = false
+    return
+  }
+  state.viewLoading = true
+  const series = await loadViewSeries(grid, view!)
+  if (my !== viewToken) return
+  setViewSeries(series)
+  state.viewLoading = false
+}
+watch(() => [state.followView, state.summary?.bbox] as const, () => updateView())
 
 // ── 4 km cell time series ─────────────────────────────────────────
 function cellPolygon(c: CellRef) {
