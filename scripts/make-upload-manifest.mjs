@@ -15,12 +15,12 @@ import { OPTIONS, r2Config, collectEntries } from './lib/r2-entries.mjs'
 const { values: args } = parseArgs({
   options: { ...OPTIONS, out: { type: 'string', default: 'data/upload-manifest.json' } },
 })
-if (!Object.keys(OPTIONS).some((k) => args[k])) {
+if (!['masks', 'composites', 'coverage', 'cells', 'summary'].some((k) => args[k])) {
   console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--out FILE]')
   process.exit(1)
 }
 
-const { bucket, prefix } = r2Config()
+const { bucket, prefix } = r2Config(args.prefix)
 const entries = await collectEntries(args, prefix)
 await mkdir(dirname(args.out), { recursive: true })
 await writeFile(args.out, JSON.stringify(entries.map(({ key, file }) => ({ key, file })), null, 1))

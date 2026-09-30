@@ -95,7 +95,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre locates its worker next to its own module, which Vite's bundling breaks;
 // let Vite build the worker and hand MapLibre the resulting URL.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
-import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod, setViewSeries } from '../state'
+import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod, setViewSeries, setRegion } from '../state'
+import { REGIONS, getRegion, type RegionId } from '../../shared/regions'
 import { loadGrid, cellAt, loadCellSeries, loadViewSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
 import CellSeries from './CellSeries.vue'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
@@ -105,8 +106,6 @@ import type { FeatureCollection } from 'geojson'
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 const WATER = '#0d1540'
 const MASK = '#9be22f'
-// Caribbean Sea; replaced by the data bbox once the summary arrives.
-const DEFAULT_BOUNDS: [number, number, number, number] = [-88, 8, -58, 25]
 const MASK_LAYERS = ['mask-dots-glow', 'mask-dots', 'mask-fill', 'mask-line']
 const COMP_LAYERS = ['comp-lo', 'comp-hi']
 const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line']
@@ -147,7 +146,7 @@ onMounted(() => {
   const m = new maplibregl.Map({
     container: container.value!,
     style: DARK_STYLE,
-    bounds: state.summary?.bbox ?? DEFAULT_BOUNDS,
+    bounds: [...getRegion(state.region)!.bbox] as [number, number, number, number],
     fitBoundsOptions: { padding: 40 },
     attributionControl: { compact: true },
     maxPitch: 0,
@@ -263,15 +262,14 @@ onMounted(() => {
 
   zoom.value = m.getZoom()
   m.on('zoom', () => { zoom.value = m.getZoom() })
-  loadGrid().then((g) => {
-    grid = g
-    gridReady.value = !!g
-    updateView()
-  })
+  loadRegionGrid()
   let viewTimer = 0
   m.on('moveend', () => {
     clearTimeout(viewTimer)
-    viewTimer = window.setTimeout(updateView, 250)
+    viewTimer = window.setTimeout(() => {
+      detectRegion()
+      updateView()
+    }, 250)
   })
   m.on('mousemove', onCellHover)
   m.on('mouseout', () => setCellOutline('cell-hover', null))
@@ -283,11 +281,53 @@ onMounted(() => {
 
 onBeforeUnmount(() => map.value?.remove())
 
-function setMaskData(mask: LoadedMask) {
+function setMaskData(mask: LoadedMask | null) {
   if (!styleReady.value) return
-  ;(map.value?.getSource('mask') as GeoJSONSource | undefined)?.setData(mask.geojson)
-  ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask.points)
+  const empty = { type: 'FeatureCollection' as const, features: [] }
+  ;(map.value?.getSource('mask') as GeoJSONSource | undefined)?.setData(mask?.geojson ?? empty)
+  ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask?.points ?? empty)
 }
+
+// ── region follows the map ─────────────────────────────────────────
+// The region whose box contains the map centre; otherwise the nearest region still in view.
+// Nothing in view keeps the current region.
+function detectRegion() {
+  const m = map.value
+  if (!m) return
+  const b = m.getBounds()
+  const c = m.getCenter()
+  const inView = REGIONS.filter(({ bbox: [w, s_, e, n] }) => w < b.getEast() && e > b.getWest() && s_ < b.getNorth() && n > b.getSouth())
+  if (!inView.length) return
+  const containing = inView.find(({ bbox: [w, s_, e, n] }) => c.lng >= w && c.lng <= e && c.lat >= s_ && c.lat <= n)
+  const dist = (r: (typeof REGIONS)[number]) => Math.hypot((r.bbox[0] + r.bbox[2]) / 2 - c.lng, (r.bbox[1] + r.bbox[3]) / 2 - c.lat)
+  const target = containing ?? inView.reduce((a, r) => (dist(r) < dist(a) ? r : a))
+  if (target.id !== state.region) setRegion(target.id)
+}
+
+function loadRegionGrid() {
+  const region: RegionId = state.region
+  grid = null
+  gridReady.value = false
+  loadGrid(region).then((g) => {
+    if (region !== state.region) return
+    grid = g
+    gridReady.value = !!g
+    updateView()
+  })
+}
+
+// A new region: drop the old region's layers and pop-up, load its grid.
+watch(() => state.region, () => {
+  popup?.remove()
+  setCellOutline('cell-hover', null)
+  setCellOutline('cell-selected', null)
+  current.value = null
+  setMaskData(null)
+  setCoverageData(null)
+  setVisible(COMP_LAYERS, false)
+  compositeShown.value = null
+  loadRegionGrid()
+})
 
 // ── timeline follows the map view ─────────────────────────────────
 // When the whole region is in view the regional daily totals are used; otherwise the
@@ -295,14 +335,14 @@ function setMaskData(mask: LoadedMask) {
 let viewToken = 0
 async function updateView() {
   const m = map.value
-  const bbox = state.summary?.bbox
+  const bbox = getRegion(state.region)!.bbox
   const b = m?.getBounds()
   const view: [number, number, number, number] | null = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] : null
   const tol = 0.25 // degrees
-  const wholeRegion = !view || !bbox ||
+  const wholeRegion = !view ||
     (view[0] <= bbox[0] + tol && view[1] <= bbox[1] + tol && view[2] >= bbox[2] - tol && view[3] >= bbox[3] - tol)
   const my = ++viewToken
-  if (!state.followView || !grid || wholeRegion) {
+  if (!state.followView || !grid || grid.region !== state.region || wholeRegion) {
     setViewSeries(null)
     state.viewLoading = false
     return
@@ -313,7 +353,7 @@ async function updateView() {
   setViewSeries(series)
   state.viewLoading = false
 }
-watch(() => [state.followView, state.summary?.bbox] as const, () => updateView())
+watch(() => state.followView, () => updateView())
 
 // ── 4 km cell time series ─────────────────────────────────────────
 function cellPolygon(c: CellRef) {
@@ -382,13 +422,14 @@ async function onCellClick(ev: maplibregl.MapMouseEvent) {
 
 // Coverage is small (~30 kB/day) and optional: cache a few days, show nothing on failure.
 const coverageCache = new Map<string, Promise<FeatureCollection | null>>()
-function loadCoverageDay(date: string) {
-  let p = coverageCache.get(date)
+function loadCoverageDay(region: RegionId, date: string) {
+  const key = `${region}/${date}`
+  let p = coverageCache.get(key)
   if (!p) {
-    p = fetch(coverageUrl(`${date}.geojson`))
+    p = fetch(coverageUrl(region, `${date}.geojson`))
       .then((r) => (r.ok ? (r.json() as Promise<FeatureCollection>) : null))
       .catch(() => null)
-    coverageCache.set(date, p)
+    coverageCache.set(key, p)
     if (coverageCache.size > 16) coverageCache.delete(coverageCache.keys().next().value!)
   }
   return p
@@ -448,8 +489,8 @@ function preloadImage(url: string) {
 // Load whatever the selection needs; a token discards responses that arrive late.
 let token = 0
 watch(
-  () => [state.selectedId, state.mode, comp.value, styleReady.value] as const,
-  async ([id, mode]) => {
+  () => [state.selectedId, state.mode, comp.value, styleReady.value, state.region] as const,
+  async ([id, mode, , , region]) => {
     if (!id) return
     const my = ++token
     state.maskError = ''
@@ -460,17 +501,17 @@ watch(
       setVisible(COMP_LAYERS, false)
       setVisible(MASK_LAYERS, true)
       setVisible(COVERAGE_LAYERS, state.showCoverage)
-      loadCoverageDay(id).then((fc) => {
+      loadCoverageDay(region, id).then((fc) => {
         if (my === token) setCoverageData(fc)
       })
       state.maskLoading = true
       try {
-        const mask = await loadMask(id)
+        const mask = await loadMask(region, id)
         if (my !== token) return
         current.value = mask
         state.liveStats = { date: id, area_km2: mask.area_km2, patches: mask.patches }
         setMaskData(mask)
-        if (next) prefetchMask(next.id)
+        if (next) prefetchMask(region, next.id)
       } catch (err) {
         if (my === token) state.maskError = (err as Error).message
       } finally {
@@ -496,7 +537,7 @@ watch(
       state.maskError = 'No composite for this period.'
       return
     }
-    const urls = { hi: compositeUrl(mode, `${id}.png`), lo: compositeUrl(mode, `${id}_lo.png`) }
+    const urls = { hi: compositeUrl(region, mode, `${id}.png`), lo: compositeUrl(region, mode, `${id}_lo.png`) }
     state.maskLoading = true
     try {
       await Promise.all([preloadImage(urls.lo), preloadImage(urls.hi)])
@@ -504,8 +545,8 @@ watch(
       showComposite(urls, summary.bounds)
       compositeShown.value = { id, ...urls }
       if (next) {
-        preloadImage(compositeUrl(mode, `${next.id}.png`)).catch(() => {})
-        preloadImage(compositeUrl(mode, `${next.id}_lo.png`)).catch(() => {})
+        preloadImage(compositeUrl(region, mode, `${next.id}.png`)).catch(() => {})
+        preloadImage(compositeUrl(region, mode, `${next.id}_lo.png`)).catch(() => {})
       }
     } catch (err) {
       if (my === token) state.maskError = (err as Error).message
@@ -516,10 +557,6 @@ watch(
   { immediate: true },
 )
 
-watch(
-  () => state.summary?.bbox,
-  (bbox) => { if (bbox) map.value?.fitBounds(bbox, { padding: 40, duration: 0 }) },
-)
 
 watch(basemap, (b) => {
   if (!styleReady.value || !map.value) return

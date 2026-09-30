@@ -28,6 +28,7 @@
       </div>
 
       <div class="current">
+        <span class="region-tag" :title="`Showing ${regionName}; pan the map to another region to switch`">{{ regionName }}</span>
         <span class="dot" :class="{ busy: state.maskLoading }" />
         <strong>{{ selectedPeriod ? formatPeriod(selectedPeriod, state.mode) : '—' }}</strong>
         <span v-if="selectedPeriod?.observed === 0" class="muted">· not imaged in view</span>
@@ -116,10 +117,12 @@ import {
   state, periods, dataRange, selectedIndex, selectedPeriod, step, selectPeriod, setMode,
   formatDate, formatPeriod, formatArea, monthName, toMs, toIso, MODES, type Mode, type Period,
 } from '../state'
+import { getRegion } from '../../shared/regions'
 
 const DAY_MS = 86_400_000
 const MODE_LABEL: Record<Mode, string> = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }
 const inView = computed(() => state.followView && !!state.viewSeries)
+const regionName = computed(() => getRegion(state.region)?.name ?? '')
 const unit = computed(() => ({ daily: 'day', weekly: 'week', monthly: 'month' })[state.mode])
 
 const track = ref<HTMLDivElement>()
@@ -392,6 +395,15 @@ onBeforeUnmount(() => clearTimeout(timer))
 }
 .bars rect.unobs.sel {
   fill: rgba(143, 166, 255, 0.3);
+}
+.region-tag {
+  padding: 2px 9px;
+  border-radius: 6px;
+  background: rgba(155, 226, 47, 0.14);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 .scope-tag {
   padding: 1px 7px;

@@ -126,10 +126,15 @@ def overview(counts: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
+    global CELL_M
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("daily_dir", type=Path)
     ap.add_argument("out_dir", type=Path)
+    ap.add_argument("--cell-m", type=int, default=CELL_M,
+                    help="Web Mercator metres per cell (default 500). Large regions need a bigger cell to keep "
+                         "images under ~8000 px, the size browsers can display (Europe: 1000).")
     args = ap.parse_args()
+    CELL_M = args.cell_m
 
     days = sorted(p.name for p in args.daily_dir.iterdir() if p.is_dir() and DATE_RE.match(p.name))
     shps = {d: args.daily_dir / d / f"{d}.shp" for d in days}

@@ -2,10 +2,12 @@
 // Mercator grid, so the clicked cell is found arithmetically and only its 64x64 block
 // of numbers is downloaded.
 import { cellsUrl } from './dataSource'
+import type { RegionId } from '../shared/regions'
 
 const R = 6378137
 
 export interface Grid {
+  region: RegionId
   x0: number
   y0: number
   cell: number
@@ -37,12 +39,17 @@ export interface CellSeries {
   values: (number | null)[]
 }
 
-let gridPromise: Promise<Grid | null> | null = null
-export function loadGrid(): Promise<Grid | null> {
-  gridPromise ??= fetch(cellsUrl('grid.json'))
-    .then((r) => (r.ok ? (r.json() as Promise<Grid>) : null))
-    .catch(() => null)
-  return gridPromise
+const gridCache = new Map<RegionId, Promise<Grid | null>>()
+export function loadGrid(region: RegionId): Promise<Grid | null> {
+  let p = gridCache.get(region)
+  if (!p) {
+    p = fetch(cellsUrl(region, 'grid.json'))
+      .then((r) => (r.ok ? (r.json() as Promise<Omit<Grid, 'region'>>) : null))
+      .then((g) => (g ? { ...g, region } : null))
+      .catch(() => null)
+    gridCache.set(region, p)
+  }
+  return p
 }
 
 const lonToX = (lon: number) => (lon * Math.PI / 180) * R
@@ -67,13 +74,14 @@ export function cellAt(grid: Grid, lon: number, lat: number): CellRef | null {
 }
 
 const chunkCache = new Map<string, Promise<Chunk | null>>()
-function loadChunk(name: string) {
-  let p = chunkCache.get(name)
+function loadChunk(region: RegionId, name: string) {
+  const key = `${region}/${name}`
+  let p = chunkCache.get(key)
   if (!p) {
-    p = fetch(cellsUrl(`${name}.json`))
+    p = fetch(cellsUrl(region, `${name}.json`))
       .then((r) => (r.ok ? (r.json() as Promise<Chunk>) : null))
       .catch(() => null)
-    chunkCache.set(name, p)
+    chunkCache.set(key, p)
   }
   return p
 }
@@ -82,7 +90,7 @@ function loadChunk(name: string) {
 export async function loadCellSeries(grid: Grid, cell: CellRef): Promise<CellSeries | null> {
   const name = `${Math.floor(cell.row / grid.chunk)}_${Math.floor(cell.col / grid.chunk)}`
   if (!grid.chunks.includes(name)) return null
-  const chunk = await loadChunk(name)
+  const chunk = await loadChunk(grid.region, name)
   const entry = chunk?.cells[`${cell.row}_${cell.col}`]
   if (!chunk || !entry) return null
 
@@ -126,7 +134,7 @@ export async function loadViewSeries(grid: Grid, [w, s, e, n]: [number, number, 
       if (grid.chunks.includes(`${br}_${bc}`)) names.push(`${br}_${bc}`)
     }
   }
-  const chunks = await Promise.all(names.map(loadChunk))
+  const chunks = await Promise.all(names.map((n) => loadChunk(grid.region, n)))
 
   for (const chunk of chunks) {
     if (!chunk) continue

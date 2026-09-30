@@ -1,8 +1,8 @@
 import type { DaySummary, SummaryResponse } from '../shared/types'
+import { getRegion } from '../shared/regions'
 
 interface Env {
   MASKS: R2Bucket
-  MASK_PREFIX: string
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -17,24 +17,30 @@ export default {
       return json({ error: 'Method not allowed' }, 405)
     }
 
+    // /api/<region>/<rest>; the region maps to its folder in the bucket (shared/regions.ts).
+    const m = url.pathname.match(/^\/api\/([a-z]+)\/(.+)$/)
+    const region = m ? getRegion(m[1]) : undefined
+    if (!m || !region) return json({ error: 'Not found' }, 404)
+    const prefix = region.prefix
+    const rest = m[2]
+
     try {
-      if (url.pathname === '/api/summary') return await getSummary(env)
+      if (rest === 'summary') return await getSummary(env, prefix)
 
-      // /api/mask/2025-01-01.shp
-      const mask = url.pathname.match(/^\/api\/mask\/(\d{4}-\d{2}-\d{2})\.(\w+)$/)
-      if (mask) return await getMaskFile(env, mask[1], mask[2].toLowerCase())
+      // mask/2025-01-01.shp
+      const mask = rest.match(/^mask\/(\d{4}-\d{2}-\d{2})\.(\w+)$/)
+      if (mask) return await getMaskFile(env, prefix, mask[1], mask[2].toLowerCase())
 
-      // /api/composites/weekly/2025-W03.png, /api/composites/monthly/summary.json
-      const comp = url.pathname.match(/^\/api\/composites\/(weekly|monthly)\/(summary\.json|[\w-]+\.png)$/)
-      if (comp) return await getDerived(env, `composites/${comp[1]}/${comp[2]}`)
-
-      // /api/coverage/summary.json, /api/coverage/2025-01-13.geojson
-      const cov = url.pathname.match(/^\/api\/coverage\/(summary\.json|\d{4}-\d{2}-\d{2}\.geojson)$/)
-      if (cov) return await getDerived(env, `coverage/${cov[1]}`)
-
-      // /api/cells/grid.json, /api/cells/3_12.json
-      const cells = url.pathname.match(/^\/api\/cells\/(grid\.json|\d+_\d+\.json)$/)
-      if (cells) return await getDerived(env, `cells/${cells[1]}`)
+      // composites/weekly/2025-W03.png, composites/monthly/summary.json
+      // coverage/summary.json, coverage/2025-01-13.geojson
+      // cells/grid.json, cells/3_12.json
+      if (
+        /^composites\/(weekly|monthly)\/(summary\.json|[\w-]+\.png)$/.test(rest) ||
+        /^coverage\/(summary\.json|\d{4}-\d{2}-\d{2}\.geojson)$/.test(rest) ||
+        /^cells\/(grid\.json|\d+_\d+\.json)$/.test(rest)
+      ) {
+        return await getDerived(env, prefix, rest)
+      }
     } catch (err) {
       console.error(err)
       return json({ error: 'Internal error' }, 500)
@@ -49,8 +55,8 @@ export default {
  * precomputed by scripts/build-summary.mjs); otherwise lists the day
  * folders in the bucket so the timeline still works without areas.
  */
-async function getSummary(env: Env): Promise<Response> {
-  const summaryObj = await env.MASKS.get(`${env.MASK_PREFIX}summary.json`)
+async function getSummary(env: Env, prefix: string): Promise<Response> {
+  const summaryObj = await env.MASKS.get(`${prefix}summary.json`)
   if (summaryObj) {
     const summary = (await summaryObj.json()) as Omit<SummaryResponse, 'hasAreas'>
     return json({ ...summary, hasAreas: true }, 200, 300)
@@ -59,9 +65,9 @@ async function getSummary(env: Env): Promise<Response> {
   const days: DaySummary[] = []
   let cursor: string | undefined
   do {
-    const page = await env.MASKS.list({ prefix: env.MASK_PREFIX, delimiter: '/', cursor })
+    const page = await env.MASKS.list({ prefix, delimiter: '/', cursor })
     for (const p of page.delimitedPrefixes) {
-      const date = p.slice(env.MASK_PREFIX.length).replace(/\/$/, '')
+      const date = p.slice(prefix.length).replace(/\/$/, '')
       if (DATE_RE.test(date)) days.push({ date, area_km2: null, patches: null })
     }
     cursor = page.truncated ? page.cursor : undefined
@@ -72,10 +78,10 @@ async function getSummary(env: Env): Promise<Response> {
   return json(body, 200, 300)
 }
 
-async function getMaskFile(env: Env, date: string, ext: string): Promise<Response> {
+async function getMaskFile(env: Env, prefix: string, date: string, ext: string): Promise<Response> {
   if (!MASK_EXTENSIONS.has(ext)) return json({ error: 'Unsupported file type' }, 400)
 
-  const obj = await env.MASKS.get(`${env.MASK_PREFIX}${date}/${date}.${ext}`)
+  const obj = await env.MASKS.get(`${prefix}${date}/${date}.${ext}`)
   if (!obj) return json({ error: `No mask for ${date}` }, 404)
 
   const headers = new Headers()
@@ -88,9 +94,9 @@ async function getMaskFile(env: Env, date: string, ext: string): Promise<Respons
   return new Response(obj.body, { headers })
 }
 
-/** Files built from the masks (composites, coverage); paths are validated by the routes above. */
-async function getDerived(env: Env, path: string): Promise<Response> {
-  const obj = await env.MASKS.get(`${env.MASK_PREFIX}${path}`)
+/** Files built from the masks (composites, coverage, cells); paths are validated by the routes above. */
+async function getDerived(env: Env, prefix: string, path: string): Promise<Response> {
+  const obj = await env.MASKS.get(`${prefix}${path}`)
   if (!obj) return json({ error: `Not found: ${path}` }, 404)
   const headers = new Headers()
   obj.writeHttpMetadata(headers)

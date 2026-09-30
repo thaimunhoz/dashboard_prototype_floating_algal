@@ -35,18 +35,29 @@ import shapely
 
 EQUAL_AREA = "EPSG:6933"
 PRECISION = 1e-4  # ~10 m; keeps the GeoJSON small
-S2_RE = re.compile(r"^S2[ABC]_MSIL2A_(\d{4})(\d{2})(\d{2})T\d+_.*_T(\w{5})_.*_refined\.tif$")
-LS_RE = re.compile(r"^L[COT]0[89]_L2SP_(\d{3})(\d{3})_(\d{4})(\d{2})(\d{2})_.*_refined\.tif$")
+# Scene ids; the inference may be a file (<scene>_refined.tif) or a folder (<scene>/<scene>_mask.shp).
+S2_RE = re.compile(r"^S2[ABC]_MSIL2A_(\d{4})(\d{2})(\d{2})T\d+_.*_T(\w{5})_")
+LS_RE = re.compile(r"^L[COT]0[89]_L2SP_(\d{3})(\d{3})_(\d{4})(\d{2})(\d{2})_")
 
 
-def scan(root: Path, pattern: re.Pattern, parse) -> dict[str, set[str]]:
-    """date -> set of tile/scene ids with an inference that day."""
+def scan(root: Path, tiles: set[str], pattern: re.Pattern, parse) -> dict[str, set[str]]:
+    """date -> set of tile/scene ids with an inference that day.
+
+    Only the tile folders listed in the tile shapefile are read, so a global inference
+    folder can serve one region. Each entry directly inside a tile folder whose name
+    starts with a scene id counts as one observation.
+    """
     out: dict[str, set[str]] = defaultdict(set)
-    for f in root.rglob("*_refined.tif"):
-        m = pattern.match(f.name)
-        if m:
-            date, tile = parse(m)
-            out[date].add(tile)
+    for tile_dir in root.iterdir():
+        if not tile_dir.is_dir() or tile_dir.name not in tiles:
+            continue
+        for entry in tile_dir.iterdir():
+            if entry.name.endswith("_prob.tif"):
+                continue
+            m = pattern.match(entry.name)
+            if m:
+                date, tile = parse(m)
+                out[date].add(tile)
     return out
 
 
@@ -57,6 +68,7 @@ def main() -> None:
     ap.add_argument("--ls-tiles", type=Path, required=True)
     ap.add_argument("--ls-dir", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=Path("data/coverage"))
+    ap.add_argument("--year", help="keep only scenes from this year, e.g. 2025")
     args = ap.parse_args()
 
     s2 = gpd.read_file(args.s2_tiles).to_crs(4326)[["Name", "geometry"]].rename(columns={"Name": "tile"})
@@ -72,8 +84,11 @@ def main() -> None:
     s2_geom = dict(zip(s2["tile"], s2.geometry))
     print(f"{len(s2)} S2 tiles, {len(ls)} Landsat scenes -> {len(pieces)} Landsat pieces on the S2 grid")
 
-    s2_days = scan(args.s2_dir, S2_RE, lambda m: (f"{m[1]}-{m[2]}-{m[3]}", m[4]))
-    ls_days = scan(args.ls_dir, LS_RE, lambda m: (f"{m[3]}-{m[4]}-{m[5]}", f"{int(m[1])}_{int(m[2])}"))
+    s2_days = scan(args.s2_dir, set(s2_geom), S2_RE, lambda m: (f"{m[1]}-{m[2]}-{m[3]}", m[4]))
+    ls_days = scan(args.ls_dir, set(ls["scene"]), LS_RE, lambda m: (f"{m[3]}-{m[4]}-{m[5]}", f"{int(m[1])}_{int(m[2])}"))
+    if args.year:  # a global inference folder may hold other years
+        s2_days = {d: t for d, t in s2_days.items() if d.startswith(args.year)}
+        ls_days = {d: t for d, t in ls_days.items() if d.startswith(args.year)}
     missing = {t for d in s2_days.values() for t in d} - s2_geom.keys()
     missing |= {s for d in ls_days.values() for s in d} - ls_pieces.keys()
     if missing:

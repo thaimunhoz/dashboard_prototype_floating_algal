@@ -29,7 +29,7 @@ const { values: args } = parseArgs({
     init: { type: 'boolean', default: false },
   },
 })
-if (!Object.keys(OPTIONS).some((k) => args[k])) {
+if (!['masks', 'composites', 'coverage', 'cells', 'summary'].some((k) => args[k])) {
   console.error('Usage: node scripts/sync-r2.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--upload | --init]')
   process.exit(1)
 }
@@ -40,7 +40,7 @@ const md5 = (file) =>
     createReadStream(file).on('data', (b) => h.update(b)).on('end', () => ok(h.digest('hex'))).on('error', fail)
   })
 
-const { bucket, prefix } = r2Config()
+const { bucket, prefix } = r2Config(args.prefix)
 const entries = await collectEntries(args, prefix)
 const state = existsSync(args.state) ? JSON.parse(readFileSync(args.state, 'utf8')) : {}
 

@@ -12,12 +12,14 @@ export const OPTIONS = {
   coverage: { type: 'string' },
   cells: { type: 'string' },
   summary: { type: 'string' },
+  // R2 folder to upload into; defaults to MASK_PREFIX in wrangler.jsonc (e.g. --prefix europe-masks-2025/).
+  prefix: { type: 'string' },
 }
 
-/** Bucket name and key prefix from wrangler.jsonc, so uploads land where the dashboard reads. */
-export function r2Config() {
+/** Bucket name and key prefix (from wrangler.jsonc unless overridden), so uploads land where the dashboard reads. */
+export function r2Config(prefix) {
   const cfg = JSON.parse(readFileSync('wrangler.jsonc', 'utf8').replace(/^\s*\/\/.*$/gm, ''))
-  return { bucket: cfg.r2_buckets[0].bucket_name, prefix: cfg.vars.MASK_PREFIX }
+  return { bucket: cfg.r2_buckets[0].bucket_name, prefix: prefix ? prefix.replace(/\/?$/, '/') : cfg.vars.MASK_PREFIX }
 }
 
 async function* walk(dir) {

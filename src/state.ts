@@ -2,6 +2,7 @@ import { reactive, computed, markRaw } from 'vue'
 import type { SummaryResponse } from '../shared/types'
 import { summaryUrl, compositeUrl, coverageUrl } from './dataSource'
 import type { ViewSeries } from './cells'
+import { DEFAULT_REGION, getRegion, type RegionId } from '../shared/regions'
 
 export type Mode = 'daily' | 'weekly' | 'monthly'
 export const MODES: Mode[] = ['daily', 'weekly', 'monthly']
@@ -43,6 +44,8 @@ export interface DayCoverage {
 
 /** Single shared store for the dashboard (small enough not to need Pinia). */
 export const state = reactive({
+  /** Region whose data is shown; follows the map (MapView) and the ?region= link. */
+  region: (getRegion(new URLSearchParams(location.search).get('region'))?.id ?? DEFAULT_REGION) as RegionId,
   summary: null as SummaryResponse | null,
   summaryError: '',
   composites: {} as Partial<Record<'weekly' | 'monthly', CompositeSummary | null>>,
@@ -154,7 +157,8 @@ export const selectedPeriod = computed<Period | null>(() => periods.value[select
 // ── selection & URL ───────────────────────────────────────────────
 function syncUrl() {
   const url = new URL(location.href)
-  url.searchParams.set('date', state.selectedId)
+  url.searchParams.set('region', state.region)
+  if (state.selectedId) url.searchParams.set('date', state.selectedId)
   if (state.mode === 'daily') url.searchParams.delete('mode')
   else url.searchParams.set('mode', state.mode)
   history.replaceState(null, '', url)
@@ -188,12 +192,18 @@ export function setMode(mode: Mode) {
   if (target) selectPeriod(target.id)
 }
 
-export async function loadSummary() {
-  loadCoverage()
+/**
+ * Loads the current region's daily summary. On the first load the mode and date come from
+ * the link; after a region switch `keep` (the previous selection) is kept when it exists.
+ */
+export async function loadSummary(keep?: string) {
+  const region = state.region
+  loadCoverage(region)
   try {
-    const res = await fetch(summaryUrl)
+    const res = await fetch(summaryUrl(region))
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const summary = (await res.json()) as SummaryResponse
+    if (region !== state.region) return // switched again meanwhile
     // summary.json read directly from the bucket always carries areas; the Worker sets the flag itself.
     summary.hasAreas ??= true
     state.summary = summary
@@ -202,23 +212,41 @@ export async function loadSummary() {
       return
     }
     const params = new URLSearchParams(location.search)
-    const mode = params.get('mode') as Mode | null
-    if (mode && MODES.includes(mode)) {
-      state.mode = mode
-      if (mode !== 'daily') loadComposite(mode)
+    if (keep === undefined) {
+      const mode = params.get('mode') as Mode | null
+      if (mode && MODES.includes(mode)) state.mode = mode
     }
-    const fromUrl = params.get('date')
+    if (state.mode !== 'daily') loadComposite(state.mode)
+    const want = keep ?? params.get('date')
     const list = periods.value
-    selectPeriod(list.some((p) => p.id === fromUrl) ? fromUrl! : list[list.length - 1].id)
+    state.selectedId = ''
+    selectPeriod(list.some((p) => p.id === want) ? want! : list[list.length - 1].id)
   } catch (err) {
-    state.summaryError = `Could not load the list of masks (${(err as Error).message}).`
+    if (region === state.region) state.summaryError = `Could not load the list of masks (${(err as Error).message}).`
   }
 }
 
-async function loadCoverage() {
+/** Switch to another region (called when the map moves there), keeping the selected date. */
+export function setRegion(id: RegionId) {
+  if (id === state.region) return
+  const keep = state.selectedId
+  state.region = id
+  state.summary = null
+  state.summaryError = ''
+  state.composites = {}
+  state.coverage = null
+  state.liveStats = null
+  state.maskError = ''
+  state.playing = false
+  setViewSeries(null)
+  syncUrl()
+  loadSummary(keep)
+}
+
+async function loadCoverage(region: RegionId) {
   try {
-    const res = await fetch(coverageUrl('summary.json'))
-    if (res.ok) state.coverage = ((await res.json()) as { days: Record<string, DayCoverage> }).days
+    const res = await fetch(coverageUrl(region, 'summary.json'))
+    if (res.ok && region === state.region) state.coverage = ((await res.json()) as { days: Record<string, DayCoverage> }).days
   } catch {
     // coverage is optional; the map just shows masks without it
   }
@@ -226,13 +254,15 @@ async function loadCoverage() {
 
 export async function loadComposite(kind: 'weekly' | 'monthly') {
   if (kind in state.composites) return
+  const region = state.region
   state.composites[kind] = null
   try {
-    const res = await fetch(compositeUrl(kind, 'summary.json'))
+    const res = await fetch(compositeUrl(region, kind, 'summary.json'))
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    state.composites[kind] = (await res.json()) as CompositeSummary
+    const summary = (await res.json()) as CompositeSummary
+    if (region === state.region) state.composites[kind] = summary
   } catch {
-    delete state.composites[kind] // allow a retry on the next switch
+    if (region === state.region) delete state.composites[kind] // allow a retry on the next switch
   }
 }
 

@@ -2,6 +2,7 @@ import { parseShp } from 'shpjs'
 import turfArea from '@turf/area'
 import type { FeatureCollection, Geometry } from 'geojson'
 import { maskUrl } from './dataSource'
+import type { RegionId } from '../shared/regions'
 
 export interface LoadedMask {
   date: string
@@ -16,28 +17,29 @@ export interface LoadedMask {
 const CACHE_SIZE = 8
 const cache = new Map<string, Promise<LoadedMask>>()
 
-export function loadMask(date: string): Promise<LoadedMask> {
-  const hit = cache.get(date)
+export function loadMask(region: RegionId, date: string): Promise<LoadedMask> {
+  const key = `${region}/${date}`
+  const hit = cache.get(key)
   if (hit) {
     // refresh LRU position
-    cache.delete(date)
-    cache.set(date, hit)
+    cache.delete(key)
+    cache.set(key, hit)
     return hit
   }
-  const p = fetchMask(date)
-  cache.set(date, p)
-  p.catch(() => cache.delete(date))
+  const p = fetchMask(region, date)
+  cache.set(key, p)
+  p.catch(() => cache.delete(key))
   while (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value!)
   return p
 }
 
 /** Warm the cache for a date without waiting on it (used while playing). */
-export function prefetchMask(date: string) {
-  loadMask(date).catch(() => {})
+export function prefetchMask(region: RegionId, date: string) {
+  loadMask(region, date).catch(() => {})
 }
 
-async function fetchMask(date: string): Promise<LoadedMask> {
-  const res = await fetch(maskUrl(date))
+async function fetchMask(region: RegionId, date: string): Promise<LoadedMask> {
+  const res = await fetch(maskUrl(region, date))
   if (!res.ok) throw new Error(res.status === 404 ? `No mask for ${date}` : `HTTP ${res.status}`)
   const buf = await res.arrayBuffer()
 

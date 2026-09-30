@@ -23,7 +23,8 @@
     }
   ],
   "vars": {
-    // Folder in the bucket holding one <YYYY-MM-DD>/<YYYY-MM-DD>.shp per day.
+    // Default bucket folder for the upload scripts (scripts/sync-r2.mjs --prefix overrides it).
+    // The Worker and the page take each region's folder from shared/regions.ts.
     "MASK_PREFIX": "caribbea-sea-masks/"
   }
 }
