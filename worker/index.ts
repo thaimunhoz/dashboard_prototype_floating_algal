@@ -18,7 +18,7 @@ export default {
     }
 
     // /api/<region>/<rest>; the region maps to its folder in the bucket (shared/regions.ts).
-    const m = url.pathname.match(/^\/api\/([a-z]+)\/(.+)$/)
+    const m = url.pathname.match(/^\/api\/([a-z-]+)\/(.+)$/)
     const region = m ? getRegion(m[1]) : undefined
     if (!m || !region) return json({ error: 'Not found' }, 404)
     const prefix = region.prefix

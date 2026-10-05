@@ -7,7 +7,11 @@
 // Usage:
 //   node scripts/sync-r2.mjs <sources...>              dry run: list what would be uploaded
 //   node scripts/sync-r2.mjs <sources...> --upload     upload the changes, then update the state
+//   node scripts/sync-r2.mjs <sources...> --prune      also delete files uploaded earlier that no longer exist locally
+//                                                      (only within the sources given; combine with --upload)
 //   node scripts/sync-r2.mjs <sources...> --init       record the current files as already in R2 (no upload)
+//   --verify            first check the bucket (public URL, ETag = MD5) for files already uploaded, e.g.
+//                       after an interrupted run; --batch N (200) and --concurrency N (10) tune the upload
 // Sources (any combination): --masks DIR --composites DIR --coverage DIR --cells DIR --summary FILE
 //
 // Example:
@@ -26,11 +30,15 @@ const { values: args } = parseArgs({
     ...OPTIONS,
     state: { type: 'string', default: 'data/r2-state.json' },
     upload: { type: 'boolean', default: false },
+    prune: { type: 'boolean', default: false },
     init: { type: 'boolean', default: false },
+    verify: { type: 'boolean', default: false },
+    batch: { type: 'string', default: '200' },
+    concurrency: { type: 'string', default: '10' },
   },
 })
 if (!['masks', 'composites', 'coverage', 'cells', 'summary'].some((k) => args[k])) {
-  console.error('Usage: node scripts/sync-r2.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--upload | --init]')
+  console.error('Usage: node scripts/sync-r2.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--upload] [--prune] | [--init]')
   process.exit(1)
 }
 
@@ -63,39 +71,108 @@ if (args.init) {
   process.exit(0)
 }
 
-const changed = entries.filter((e) => state[e.key] !== hashes.get(e.key))
+let changed = entries.filter((e) => state[e.key] !== hashes.get(e.key))
+
+// --verify: ask the bucket which of the "changed" files it already holds (its ETag is the MD5),
+// e.g. after an interrupted upload, and record those so they are not sent again.
+if (args.verify && changed.length) {
+  const env = existsSync('.env.vercel') ? readFileSync('.env.vercel', 'utf8') : ''
+  const publicBase = env.match(/^VITE_DATA_URL=(\S+)/m)?.[1]?.replace(/\/?$/, '/')
+  if (!publicBase) {
+    console.error('--verify needs the public bucket URL (VITE_DATA_URL in .env.vercel).')
+    process.exit(1)
+  }
+  const already = []
+  let next = 0
+  await Promise.all(Array.from({ length: 16 }, async () => {
+    while (next < changed.length) {
+      const e = changed[next++]
+      try {
+        const res = await fetch(publicBase + e.key.split('/').map(encodeURIComponent).join('/'), { method: 'HEAD' })
+        if (res.ok && res.headers.get('etag')?.replaceAll('"', '') === hashes.get(e.key)) already.push(e.key)
+      } catch {
+        // unreachable: treat as not uploaded
+      }
+    }
+  }))
+  await saveState(already)
+  console.log(`Verified against the bucket: ${already.length} of ${changed.length} files were already up to date.`)
+  const done = new Set(already)
+  changed = changed.filter((e) => !done.has(e.key))
+}
+
+// Stale: uploaded earlier under this prefix, in one of the given sources, but gone locally
+// (e.g. a day removed from the masks folder). Deleted only with --prune.
+const local = new Set(entries.map((e) => e.key))
+const inScope = (rest) =>
+  (args.masks && /^\d{4}-\d{2}-\d{2}\//.test(rest)) ||
+  ['composites', 'coverage', 'cells'].some((k) => args[k] && rest.startsWith(`${k}/`)) ||
+  (args.summary && rest === 'summary.json')
+const stale = Object.keys(state).filter((k) => k.startsWith(prefix) && !local.has(k) && inScope(k.slice(prefix.length)))
+
+// Summarise by folder so a long list stays readable.
+function printGroups(keys) {
+  const groups = new Map()
+  for (const key of keys) {
+    const rest = key.slice(prefix.length)
+    const group = /^\d{4}-\d{2}-\d{2}\//.test(rest) ? 'daily masks' : rest.includes('/') ? rest.slice(0, rest.lastIndexOf('/')) : rest
+    groups.set(group, [...(groups.get(group) ?? []), rest.slice(rest.lastIndexOf('/') + 1)])
+  }
+  for (const [group, files] of groups) {
+    const shown = group === 'daily masks' ? [...new Set(files.map((f) => f.slice(0, 10)))] : files
+    console.log(`  ${group}: ${shown.length > 12 ? `${shown.slice(0, 12).join(', ')} … (+${shown.length - 12})` : shown.join(', ')}`)
+  }
+}
 const mb = changed.reduce((s, e) => s + e.size, 0) / 1e6
 console.log(`${changed.length} of ${entries.length} files changed (${mb.toFixed(1)} MB):`)
-// Summarise by folder so a long list stays readable.
-const groups = new Map()
-for (const e of changed) {
-  const rest = e.key.slice(prefix.length)
-  const group = /^\d{4}-\d{2}-\d{2}\//.test(rest) ? 'daily masks' : rest.includes('/') ? rest.slice(0, rest.lastIndexOf('/')) : rest
-  groups.set(group, [...(groups.get(group) ?? []), rest.slice(rest.lastIndexOf('/') + 1)])
+printGroups(changed.map((e) => e.key))
+if (stale.length) {
+  console.log(`${stale.length} files in ${bucket}/${prefix} no longer exist locally${args.prune ? ' (will be deleted)' : ' (add --prune to delete them)'}:`)
+  printGroups(stale)
 }
-for (const [group, files] of groups) {
-  const shown = group === 'daily masks' ? [...new Set(files.map((f) => f.slice(0, 10)))] : files
-  console.log(`  ${group}: ${shown.length > 12 ? `${shown.slice(0, 12).join(', ')} … (+${shown.length - 12})` : shown.join(', ')}`)
-}
-if (!changed.length) process.exit(0)
 
-if (!args.upload) {
-  console.log('\nDry run. Add --upload to send these to R2.')
+if (!args.upload && !args.prune) {
+  if (changed.length || stale.length) console.log('\nDry run. Add --upload to send the changes to R2 (and --prune to delete the stale files).')
   process.exit(0)
 }
 
-const manifest = 'data/upload-changed.json'
-await writeFile(manifest, JSON.stringify(changed.map(({ key, file }) => ({ key, file })), null, 1))
 const wrangler = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-// --force skips wrangler's "may overwrite existing objects / data catalog" prompt: overwriting the
-// changed files is the point, and the list was shown above (and by the dry run).
-const res = spawnSync(wrangler, ['wrangler', 'r2', 'bulk', 'put', bucket, '--filename', manifest, '--remote', '--force'], {
-  stdio: 'inherit',
-  shell: process.platform === 'win32',
-})
-if (res.status !== 0) {
-  console.error('\nUpload failed; the state was not updated, so re-running will retry the same files.')
-  process.exit(res.status ?? 1)
+const run = (argv) => spawnSync(wrangler, ['wrangler', ...argv], { stdio: 'inherit', shell: process.platform === 'win32' })
+
+if (args.upload && changed.length) {
+  // Upload in batches and record each finished batch, so a failure (e.g. a Cloudflare 504)
+  // only costs that batch: re-running continues with the files not uploaded yet.
+  const size = Math.max(1, Number(args.batch) || 200)
+  const manifest = 'data/upload-changed.json'
+  for (let i = 0; i < changed.length; i += size) {
+    const batch = changed.slice(i, i + size)
+    console.log(`\nBatch ${i / size + 1} of ${Math.ceil(changed.length / size)}: ${batch.length} files`)
+    await writeFile(manifest, JSON.stringify(batch.map(({ key, file }) => ({ key, file })), null, 1))
+    // --force skips wrangler's "may overwrite existing objects / data catalog" prompt: overwriting the
+    // changed files is the point, and the list was shown above (and by the dry run).
+    const res = run(['r2', 'bulk', 'put', bucket, '--filename', manifest, '--remote', '--force', '--concurrency', args.concurrency])
+    if (res.status !== 0) {
+      console.error(`\nUpload failed in this batch; ${i} of ${changed.length} files are uploaded and recorded.` +
+        '\nRe-run the same command to continue (add --verify to also skip files of this batch that made it).')
+      process.exit(res.status ?? 1)
+    }
+    await saveState(batch.map((e) => e.key))
+  }
+  console.log(`\nUploaded ${changed.length} files; state saved to ${args.state}.`)
 }
-await saveState(changed.map((e) => e.key))
-console.log(`\nUploaded ${changed.length} files; state saved to ${args.state}.`)
+
+// Prune after uploading, so the dashboard never points at a file that is already gone.
+if (args.prune && stale.length) {
+  let deleted = 0
+  for (const key of stale) {
+    const res = run(['r2', 'object', 'delete', `${bucket}/${key}`, '--remote'])
+    if (res.status !== 0) {
+      console.error(`\nCould not delete ${key}; re-run to retry the rest.`)
+      break
+    }
+    delete state[key]
+    deleted++
+  }
+  await saveState([])
+  console.log(`Deleted ${deleted} of ${stale.length} stale files; state saved to ${args.state}.`)
+}

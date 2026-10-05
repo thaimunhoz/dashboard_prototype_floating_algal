@@ -1,5 +1,7 @@
 /** Regions shown in the atlas. Each lives in its own folder of the R2 bucket with the same layout:
- *  <prefix>summary.json, <prefix><date>/<date>.shp, <prefix>composites/, coverage/, cells/. */
+ *  <prefix>summary.json, <prefix><date>/<date>.shp, <prefix>composites/, coverage/, cells/.
+ *  Order matters where boxes overlap: the map shows the first region whose box contains the map
+ *  centre, so the Caribbean (listed first) wins inside its box over the wider North America. */
 export const REGIONS = [
   {
     id: 'caribbean',
@@ -12,7 +14,13 @@ export const REGIONS = [
     id: 'europe',
     name: 'Europe',
     prefix: 'europe-masks-2025/',
-    bbox: [-15.0, 32.45, 41.36, 62.25],
+    bbox: [-13.91, 32.6, 41.36, 62.25],
+  },
+  {
+    id: 'north-america',
+    name: 'North America',
+    prefix: 'north-america-masks-2025/',
+    bbox: [-150.43, 4.84, -49.66, 62.26],
   },
 ] as const satisfies readonly { id: string; name: string; prefix: string; bbox: readonly [number, number, number, number] }[]
 

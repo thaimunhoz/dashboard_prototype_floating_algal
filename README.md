@@ -1,7 +1,7 @@
 # Floating Algal Atlas
 
 A public web dashboard for browsing daily floating algal bloom masks, stored as shapefiles in a
-Cloudflare R2 bucket. Two regions: **Caribbean Sea** and **Europe** (2025).
+Cloudflare R2 bucket. Three regions: **Caribbean Sea**, **Europe** and **North America** (2025).
 
 - **Welcome page** on every page load (reopen with the ⓘ button in the title).
 - **Regions follow the map**: pan to Europe or the Caribbean and the timeline, chart, masks and
@@ -65,6 +65,13 @@ Python scripts run in the conda `base` environment (geopandas, shapely, numpy, P
 |---|---|---|---|---|
 | Caribbean | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/CARIBBEAN_SEA` | `Z:/…/prototype_v2/shapefiles/caribbean_4km_fishnet.shp` | `E:/post_processing/DATASET/shapefiles/Sentinel_tiles_Caribbean_Sea.shp`, `E:/post_processing/DATASET/Caribbean_Sentinel_inferences` | `E:/post_processing/DATASET/shapefiles/Landsat_tiles_Caribbean_Sea.shp`, `E:/post_processing/DATASET/Caribbean_Landsat_inferences` |
 | Europe | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/EUROPE/daily_masks` | `Z:/guser/tml/global_model/data_management/shapefiles/continents/europe_4x4_grid.shp` | `Z:/…/continents/S2_Europe.shp`, `Z:/…/prototype_v2/AQUAVis_dataset/inference_sentinel` | `Z:/…/continents/L89_Europe.shp`, `Z:/…/prototype_v2/AQUAVis_dataset/inference_landsat` |
+| North America | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/NORTH_AMERICA/daily_masks_new` | `Z:/…/continents/north_america_4x4_grid.shp` | `Z:/…/continents/S2_North_America.shp`, `Z:/…/AQUAVis_dataset/inference_sentinel` | `Z:/…/continents/L89_North_America.shp`, `Z:/…/AQUAVis_dataset/inference_landsat` |
+
+Heatmap cell size (`--cell-m`): Caribbean 500 (default), Europe 1000, North America 1500, chosen so each
+image stays under ~8000 px. R2 folders: `caribbea-sea-masks/`, `europe-masks-2025/`, `north-america-masks-2025/`.
+
+The North America masks also cover the Caribbean; inside the Caribbean box the map shows the
+Caribbean dataset (it comes first in `shared/regions.ts`).
 
 Example for Europe (`R=europe`; for the Caribbean use `data/caribbean`, its paths, and the default cell size):
 
@@ -110,7 +117,13 @@ npm run sync -- --prefix europe-masks-2025/ --masks <masks> --summary data/europ
 ```
 
 After editing masks: rebuild the summary, composites and cells (coverage only changes when scenes are
-added), then run the same sync. The state is only updated after a successful upload, so a failed run
+added), then run the same sync.
+
+**Replacing a region's masks with a new set** (e.g. a new model run): point `--masks` at the new folder,
+rebuild the derived files into empty folders, and add `--prune` to the upload. Files are overwritten in
+place, then anything uploaded earlier that is no longer in the new set (a day that was dropped, an old
+block) is deleted, one `wrangler r2 object delete` per file, so the dashboard never has a gap. `--prune`
+only touches the sources given in the command and only files the sync script uploaded itself. The state is only updated after a successful upload, so a failed run
 can be repeated. If `data/r2-state.json` is lost, recreate it with the same sources and `--init`
 (records the local files as already uploaded; only when they match the bucket).
 
