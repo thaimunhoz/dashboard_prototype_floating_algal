@@ -73,28 +73,35 @@ if (args.init) {
 
 let changed = entries.filter((e) => state[e.key] !== hashes.get(e.key))
 
-// --verify: ask the bucket which of the "changed" files it already holds (its ETag is the MD5),
-// e.g. after an interrupted upload, and record those so they are not sent again.
-if (args.verify && changed.length) {
-  const env = existsSync('.env.vercel') ? readFileSync('.env.vercel', 'utf8') : ''
-  const publicBase = env.match(/^VITE_DATA_URL=(\S+)/m)?.[1]?.replace(/\/?$/, '/')
-  if (!publicBase) {
-    console.error('--verify needs the public bucket URL (VITE_DATA_URL in .env.vercel).')
-    process.exit(1)
-  }
-  const already = []
+// Which of these files the bucket already holds with the same content (its ETag is the MD5),
+// checked through the public bucket URL. Used by --verify and when retrying a failed batch.
+const env = existsSync('.env.vercel') ? readFileSync('.env.vercel', 'utf8') : ''
+const publicBase = env.match(/^VITE_DATA_URL=(\S+)/m)?.[1]?.replace(/\/?$/, '/')
+async function inBucket(list) {
+  if (!publicBase) return []
+  const found = []
   let next = 0
   await Promise.all(Array.from({ length: 16 }, async () => {
-    while (next < changed.length) {
-      const e = changed[next++]
+    while (next < list.length) {
+      const e = list[next++]
       try {
         const res = await fetch(publicBase + e.key.split('/').map(encodeURIComponent).join('/'), { method: 'HEAD' })
-        if (res.ok && res.headers.get('etag')?.replaceAll('"', '') === hashes.get(e.key)) already.push(e.key)
+        if (res.ok && res.headers.get('etag')?.replaceAll('"', '') === hashes.get(e.key)) found.push(e.key)
       } catch {
         // unreachable: treat as not uploaded
       }
     }
   }))
+  return found
+}
+
+// --verify: record the "changed" files the bucket already has (e.g. after an interrupted upload).
+if (args.verify && changed.length) {
+  if (!publicBase) {
+    console.error('--verify needs the public bucket URL (VITE_DATA_URL in .env.vercel).')
+    process.exit(1)
+  }
+  const already = await inBucket(changed)
   await saveState(already)
   console.log(`Verified against the bucket: ${already.length} of ${changed.length} files were already up to date.`)
   const done = new Set(already)

@@ -35,22 +35,23 @@ for (const [i, date] of dates.entries()) {
     continue
   }
   const buf = await readFile(shpPath)
-  // Shapefile header bbox (bytes 36-68): xmin, ymin, xmax, ymax.
-  if (buf.length >= 100) {
-    const [xmin, ymin, xmax, ymax] = [36, 44, 52, 60].map((o) => buf.readDoubleLE(o))
-    if (Number.isFinite(xmin) && xmax > xmin) {
-      bbox[0] = Math.min(bbox[0], xmin); bbox[1] = Math.min(bbox[1], ymin)
-      bbox[2] = Math.max(bbox[2], xmax); bbox[3] = Math.max(bbox[3], ymax)
-    }
-  }
-
   const geoms = buf.length > 100 ? parseShp(buf) : []
   let m2 = 0
   let patches = 0
   for (const g of geoms) {
     if (!g) continue
     m2 += turfArea({ type: 'Feature', geometry: g, properties: {} })
-    patches += g.type === 'MultiPolygon' ? g.coordinates.length : 1
+    const polys = g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates]
+    patches += polys.length
+    // Extent from the outer rings themselves: some writers leave the file header's bbox wrong.
+    for (const poly of polys) {
+      for (const [x, y] of poly[0] ?? []) {
+        if (x < bbox[0]) bbox[0] = x
+        if (y < bbox[1]) bbox[1] = y
+        if (x > bbox[2]) bbox[2] = x
+        if (y > bbox[3]) bbox[3] = y
+      }
+    }
   }
   days.push({ date, area_km2: Math.round((m2 / 1e6) * 100) / 100, patches })
   process.stdout.write(`\r${i + 1}/${dates.length} ${date}  ${(m2 / 1e6).toFixed(1)} km²   `)

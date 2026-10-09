@@ -65,9 +65,23 @@ def period_of(d: date, kind: str) -> tuple[str, date, date]:
 
 
 def shp_bbox(path: Path):
-    with open(path, "rb") as f:
-        head = f.read(100)
-    return struct.unpack("<4d", head[36:68]) if len(head) == 100 else None
+    """Extent of a shapefile from its records' own bounding boxes.
+
+    The file header's bbox is not used: some writers leave it wrong (e.g. 0.0 for an edge),
+    which would stretch the grid. Each polygon record starts with its shape type and bbox.
+    """
+    data = path.read_bytes()
+    xmin = ymin = math.inf
+    xmax = ymax = -math.inf
+    pos = 100
+    while pos + 8 <= len(data):
+        length = struct.unpack_from(">i", data, pos + 4)[0] * 2  # content length, in 16-bit words
+        content = pos + 8
+        if length >= 36 and struct.unpack_from("<i", data, content)[0] != 0:  # 0 = null shape
+            x0, y0, x1, y1 = struct.unpack_from("<4d", data, content + 4)
+            xmin, ymin, xmax, ymax = min(xmin, x0), min(ymin, y0), max(xmax, x1), max(ymax, y1)
+        pos = content + length
+    return (xmin, ymin, xmax, ymax) if xmax > xmin else None
 
 
 class Grid:

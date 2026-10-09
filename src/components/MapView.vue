@@ -96,7 +96,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // let Vite build the worker and hand MapLibre the resulting URL.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod, setViewSeries, setRegion } from '../state'
-import { REGIONS, getRegion, type RegionId } from '../../shared/regions'
+import { REGIONS, getRegion, type Region, type RegionId } from '../../shared/regions'
+import FOOTPRINTS from '../../shared/footprints.json'
 import { loadGrid, cellAt, loadCellSeries, loadViewSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
 import CellSeries from './CellSeries.vue'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
@@ -289,8 +290,7 @@ function setMaskData(mask: LoadedMask | null) {
 }
 
 // ── region follows the map ─────────────────────────────────────────
-// The region whose box contains the map centre; otherwise the nearest region still in view.
-// Nothing in view keeps the current region.
+// Rules in shared/regions.ts: priority box, then Sentinel-2 tile footprint, then box / nearest.
 function detectRegion() {
   const m = map.value
   if (!m) return
@@ -298,10 +298,31 @@ function detectRegion() {
   const c = m.getCenter()
   const inView = REGIONS.filter(({ bbox: [w, s_, e, n] }) => w < b.getEast() && e > b.getWest() && s_ < b.getNorth() && n > b.getSouth())
   if (!inView.length) return
-  const containing = inView.find(({ bbox: [w, s_, e, n] }) => c.lng >= w && c.lng <= e && c.lat >= s_ && c.lat <= n)
-  const dist = (r: (typeof REGIONS)[number]) => Math.hypot((r.bbox[0] + r.bbox[2]) / 2 - c.lng, (r.bbox[1] + r.bbox[3]) / 2 - c.lat)
-  const target = containing ?? inView.reduce((a, r) => (dist(r) < dist(a) ? r : a))
+  const inBox = (r: Region) => c.lng >= r.bbox[0] && c.lng <= r.bbox[2] && c.lat >= r.bbox[1] && c.lat <= r.bbox[3]
+  const fp = (r: Region) => (FOOTPRINTS as Record<string, MultiPolygonCoords | undefined>)[r.id]
+  const dist = (r: Region) => Math.hypot((r.bbox[0] + r.bbox[2]) / 2 - c.lng, (r.bbox[1] + r.bbox[3]) / 2 - c.lat)
+  const current = getRegion(state.region)!
+  const target =
+    inView.find((r) => r.priority && inBox(r)) ??
+    inView.find((r) => fp(r) && inMultiPolygon(c.lng, c.lat, fp(r)!)) ??
+    (inBox(current) ? current : inView.reduce((a, r) => (dist(r) < dist(a) ? r : a)))
   if (target.id !== state.region) setRegion(target.id)
+}
+
+type MultiPolygonCoords = { coordinates: number[][][][] }
+/** Even-odd point-in-polygon over every ring, so holes in a footprint are respected. */
+function inMultiPolygon(x: number, y: number, mp: MultiPolygonCoords) {
+  let inside = false
+  for (const poly of mp.coordinates) {
+    for (const ring of poly) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i]
+        const [xj, yj] = ring[j]
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
+      }
+    }
+  }
+  return inside
 }
 
 function loadRegionGrid() {
