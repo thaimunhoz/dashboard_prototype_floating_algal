@@ -11,7 +11,9 @@
 //                                                      (only within the sources given; combine with --upload)
 //   node scripts/sync-r2.mjs <sources...> --init       record the current files as already in R2 (no upload)
 //   --verify            first check the bucket (public URL, ETag = MD5) for files already uploaded, e.g.
-//                       after an interrupted run; --batch N (200) and --concurrency N (10) tune the upload
+//                       after an interrupted run. Uploads go in batches (--batch, 200) paced to --rate files/s
+//                       (3; Cloudflare allows ~1200 API calls per 5 min) with --concurrency parallel uploads
+//                       (5); a failed batch (429/504) is retried automatically after a pause.
 // Sources (any combination): --masks DIR --composites DIR --coverage DIR --cells DIR --summary FILE
 //
 // Example:
@@ -34,7 +36,8 @@ const { values: args } = parseArgs({
     init: { type: 'boolean', default: false },
     verify: { type: 'boolean', default: false },
     batch: { type: 'string', default: '200' },
-    concurrency: { type: 'string', default: '10' },
+    concurrency: { type: 'string', default: '5' },
+    rate: { type: 'string', default: '3' },
   },
 })
 if (!['masks', 'composites', 'coverage', 'cells', 'summary'].some((k) => args[k])) {
@@ -147,23 +150,44 @@ const wrangler = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 const run = (argv) => spawnSync(wrangler, ['wrangler', ...argv], { stdio: 'inherit', shell: process.platform === 'win32' })
 
 if (args.upload && changed.length) {
-  // Upload in batches and record each finished batch, so a failure (e.g. a Cloudflare 504)
-  // only costs that batch: re-running continues with the files not uploaded yet.
+  // Upload in batches and record each finished batch. Wrangler makes one Cloudflare API call per
+  // file, and the API allows ~1200 calls per 5 minutes, so batches are paced to --rate files/s.
+  // A failed batch (429 rate limit, 504 timeout) is retried after a pause, sending only the files
+  // the bucket doesn't have yet; after the last retry, re-running the command continues.
   const size = Math.max(1, Number(args.batch) || 200)
+  const rate = Math.max(0.1, Number(args.rate) || 3)
+  const waits = [60, 120, 300, 300, 300] // seconds before each retry
   const manifest = 'data/upload-changed.json'
+  const sleep = (s) => new Promise((ok) => setTimeout(ok, s * 1000))
   for (let i = 0; i < changed.length; i += size) {
-    const batch = changed.slice(i, i + size)
-    console.log(`\nBatch ${i / size + 1} of ${Math.ceil(changed.length / size)}: ${batch.length} files`)
-    await writeFile(manifest, JSON.stringify(batch.map(({ key, file }) => ({ key, file })), null, 1))
-    // --force skips wrangler's "may overwrite existing objects / data catalog" prompt: overwriting the
-    // changed files is the point, and the list was shown above (and by the dry run).
-    const res = run(['r2', 'bulk', 'put', bucket, '--filename', manifest, '--remote', '--force', '--concurrency', args.concurrency])
-    if (res.status !== 0) {
-      console.error(`\nUpload failed in this batch; ${i} of ${changed.length} files are uploaded and recorded.` +
-        '\nRe-run the same command to continue (add --verify to also skip files of this batch that made it).')
-      process.exit(res.status ?? 1)
+    let todo = changed.slice(i, i + size)
+    console.log(`\nBatch ${i / size + 1} of ${Math.ceil(changed.length / size)}: ${todo.length} files`)
+    for (let attempt = 0; ; attempt++) {
+      const started = Date.now()
+      await writeFile(manifest, JSON.stringify(todo.map(({ key, file }) => ({ key, file })), null, 1))
+      // --force skips wrangler's "may overwrite existing objects / data catalog" prompt: overwriting the
+      // changed files is the point, and the list was shown above (and by the dry run).
+      const res = run(['r2', 'bulk', 'put', bucket, '--filename', manifest, '--remote', '--force', '--concurrency', args.concurrency])
+      if (res.status === 0) {
+        await saveState(todo.map((e) => e.key))
+        const minSeconds = todo.length / rate
+        const spent = (Date.now() - started) / 1000
+        if (i + size < changed.length && spent < minSeconds) await sleep(minSeconds - spent)
+        break
+      }
+      if (attempt >= waits.length) {
+        console.error(`\nThis batch kept failing; ${i} of ${changed.length} files are uploaded and recorded.` +
+          '\nRe-run the same command (with --verify) later to continue.')
+        process.exit(res.status ?? 1)
+      }
+      console.log(`\nBatch failed (often Cloudflare's rate limit); waiting ${waits[attempt]} s, then retrying the files not in the bucket yet…`)
+      await sleep(waits[attempt])
+      const done = new Set(await inBucket(todo))
+      await saveState([...done])
+      todo = todo.filter((e) => !done.has(e.key))
+      if (!todo.length) break
+      console.log(`${done.size} files of this batch made it; retrying ${todo.length} (attempt ${attempt + 2}).`)
     }
-    await saveState(batch.map((e) => e.key))
   }
   console.log(`\nUploaded ${changed.length} files; state saved to ${args.state}.`)
 }
