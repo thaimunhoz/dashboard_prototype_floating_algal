@@ -52,6 +52,13 @@ export const REGIONS = [
     bbox: [-19.83, -35.57, 53.88, 39.84],
     priority: false,
   },
+  {
+    id: 'oceania',
+    name: 'Oceania',
+    prefix: 'oceania-masks-2025/',
+    bbox: [110.41, -48.83, 178.23, -9.13],
+    priority: false,
+  },
 ] as const satisfies readonly {
   id: string
   name: string

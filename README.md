@@ -1,8 +1,8 @@
 # Floating Algal Atlas
 
 A public web dashboard for browsing daily floating algal bloom masks, stored as shapefiles in a
-Cloudflare R2 bucket. Six regions: **Caribbean Sea**, **Europe**, **North America**,
-**South America**, **Asia** and **Africa** (2025).
+Cloudflare R2 bucket. Seven regions: **Caribbean Sea**, **Europe**, **North America**,
+**South America**, **Asia**, **Africa** and **Oceania** (2025).
 
 - **Welcome page** on every page load (reopen with the ⓘ button in the title).
 - **Regions follow the map**: pan to Europe or the Caribbean and the timeline, chart, masks and
@@ -70,11 +70,15 @@ Python scripts run in the conda `base` environment (geopandas, shapely, numpy, P
 | South America | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/SOUTH_AMERICA/daily_masks` | `Z:/…/continents/south_america_4x4_grid.shp` | `Z:/…/continents/S2_South_America.shp`, `Z:/…/AQUAVis_dataset/inference_sentinel` | `Z:/…/continents/L89_South_America.shp`, `Z:/…/AQUAVis_dataset/inference_landsat` |
 | Asia | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/ASIA/daily_masks` | `Z:/…/continents/asia_4x4_grid.shp` | `Z:/…/continents/S2_Asia.shp`, `Z:/…/AQUAVis_dataset/inference_sentinel` | `Z:/…/continents/L89_Asia.shp`, `Z:/…/AQUAVis_dataset/inference_landsat` |
 | Africa | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/AFRICA/daily_masks` | `Z:/…/continents/africa_4x4_grid.shp` | `Z:/…/continents/S2_Africa.shp`, `Z:/…/AQUAVis_dataset/inference_sentinel` | `Z:/…/continents/L89_Africa.shp`, `Z:/…/AQUAVis_dataset/inference_landsat` |
+| Oceania | `Z:/guser/tml/global_model/PROTOTYPE/prototype_v2/global_post_processed/OCEANIA/daily_masks` | `Z:/…/continents/oceania_4x4_grid.shp` | `Z:/…/continents/S2_Oceania.shp`, `Z:/…/AQUAVis_dataset/inference_sentinel` | `Z:/…/continents/L89_Oceania.shp`, `Z:/…/AQUAVis_dataset/inference_landsat` |
 
-Heatmap cell size (`--cell-m`): Caribbean 500 (default), Europe 1000, Africa 1200, North and South
-America 1500, Asia 2200, chosen so each image stays under ~8000 px. R2 folders: `caribbea-sea-masks/`,
-`europe-masks-2025/`, `north-america-masks-2025/`, `south-america-masks-2025/`, `asia-masks-2025/`,
-`africa-masks-2025/`.
+Heatmap cell size (`--cell-m`): Caribbean 500 (default), Europe and Oceania 1000, Africa 1200, North and
+South America 1500, Asia 2200, chosen so each image stays under ~8000 px. R2 folders:
+`caribbea-sea-masks/`, `europe-masks-2025/`, `north-america-masks-2025/`, `south-america-masks-2025/`,
+`asia-masks-2025/`, `africa-masks-2025/`, `oceania-masks-2025/`.
+
+None of the regions crosses the 180° meridian (Oceania's masks and tiles stop at ~178°E); a region
+that does would need the scripts and region boxes to handle wrap-around.
 
 **Which region the map shows** (rules in `shared/regions.ts`): inside the Caribbean box, always the
 Caribbean dataset (North and South America also cover it); elsewhere, the region whose Sentinel-2 tile
@@ -84,7 +88,7 @@ region or its tile list changes:
 ```bash
 conda run -n base python scripts/build_footprints.py europe=<S2_Europe.shp> \
   north-america=<S2_North_America.shp> south-america=<S2_South_America.shp> asia=<S2_Asia.shp> \
-  africa=<S2_Africa.shp>
+  africa=<S2_Africa.shp> oceania=<S2_Oceania.shp>
 ```
 
 The scripts take extents from the polygons themselves, not the shapefile header (some South America
