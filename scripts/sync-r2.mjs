@@ -77,38 +77,54 @@ if (args.init) {
 let changed = entries.filter((e) => state[e.key] !== hashes.get(e.key))
 
 // Which of these files the bucket already holds with the same content (its ETag is the MD5),
-// checked through the public bucket URL. Used by --verify and when retrying a failed batch.
+// checked through the public bucket URL. Used only by --verify.
+// Careful: that URL is the same one the live dashboard reads, and Cloudflare rate-limits it (r2.dev);
+// checking thousands of files quickly made it answer 429 to everyone. So: few requests at a time,
+// and stop at the first 429 (the remaining files are then simply uploaded again).
 const env = existsSync('.env.vercel') ? readFileSync('.env.vercel', 'utf8') : ''
 const publicBase = env.match(/^VITE_DATA_URL=(\S+)/m)?.[1]?.replace(/\/?$/, '/')
+const VERIFY_PARALLEL = 4
 async function inBucket(list) {
   if (!publicBase) return []
   const found = []
   let next = 0
-  await Promise.all(Array.from({ length: 16 }, async () => {
-    while (next < list.length) {
+  let limited = false
+  await Promise.all(Array.from({ length: VERIFY_PARALLEL }, async () => {
+    while (!limited && next < list.length) {
       const e = list[next++]
       try {
         const res = await fetch(publicBase + e.key.split('/').map(encodeURIComponent).join('/'), { method: 'HEAD' })
+        if (res.status === 429) {
+          limited = true
+          break
+        }
         if (res.ok && res.headers.get('etag')?.replaceAll('"', '') === hashes.get(e.key)) found.push(e.key)
       } catch {
         // unreachable: treat as not uploaded
       }
     }
   }))
+  if (limited) console.log(`  (the public bucket URL is rate-limiting; stopped checking after ${next} files)`)
   return found
 }
 
 // --verify: record the "changed" files the bucket already has (e.g. after an interrupted upload).
+// Only worth it for a few hundred files; for large sets just upload (re-sending is cheaper).
 if (args.verify && changed.length) {
   if (!publicBase) {
     console.error('--verify needs the public bucket URL (VITE_DATA_URL in .env.vercel).')
     process.exit(1)
   }
-  const already = await inBucket(changed)
-  await saveState(already)
-  console.log(`Verified against the bucket: ${already.length} of ${changed.length} files were already up to date.`)
-  const done = new Set(already)
-  changed = changed.filter((e) => !done.has(e.key))
+  if (changed.length > 2000) {
+    console.log(`--verify skipped: ${changed.length} files is too many to check through the public URL without ` +
+      'rate-limiting the live dashboard. They will be uploaded (finished batches are recorded as usual).')
+  } else {
+    const already = await inBucket(changed)
+    await saveState(already)
+    console.log(`Verified against the bucket: ${already.length} of ${changed.length} files were already up to date.`)
+    const done = new Set(already)
+    changed = changed.filter((e) => !done.has(e.key))
+  }
 }
 
 // Stale: uploaded earlier under this prefix, in one of the given sources, but gone locally
@@ -167,7 +183,7 @@ if (args.upload && changed.length) {
   const manifest = 'data/upload-changed.json'
   const sleep = (s) => new Promise((ok) => setTimeout(ok, s * 1000))
   for (let i = 0; i < changed.length; i += size) {
-    let todo = changed.slice(i, i + size)
+    const todo = changed.slice(i, i + size)
     console.log(`\nBatch ${i / size + 1} of ${Math.ceil(changed.length / size)}: ${todo.length} files`)
     for (let attempt = 0; ; attempt++) {
       const started = Date.now()
@@ -184,16 +200,13 @@ if (args.upload && changed.length) {
       }
       if (attempt >= waits.length) {
         console.error(`\nThis batch kept failing; ${i} of ${changed.length} files are uploaded and recorded.` +
-          '\nRe-run the same command (with --verify) later to continue.')
+          '\nRe-run the same command later to continue.')
         process.exit(res.status ?? 1)
       }
-      console.log(`\nBatch failed (often Cloudflare's rate limit); waiting ${waits[attempt]} s, then retrying the files not in the bucket yet…`)
+      // Re-send the whole batch rather than checking which files made it through the public URL
+      // (that URL is the live dashboard's, and hammering it rate-limits the site for everyone).
+      console.log(`\nBatch failed (often Cloudflare's rate limit); waiting ${waits[attempt]} s, then sending it again (attempt ${attempt + 2})…`)
       await sleep(waits[attempt])
-      const done = new Set(await inBucket(todo))
-      await saveState([...done])
-      todo = todo.filter((e) => !done.has(e.key))
-      if (!todo.length) break
-      console.log(`${done.size} files of this batch made it; retrying ${todo.length} (attempt ${attempt + 2}).`)
     }
   }
   console.log(`\nUploaded ${changed.length} files; state saved to ${args.state}.`)
