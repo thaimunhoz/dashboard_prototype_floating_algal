@@ -35,8 +35,9 @@
         </svg>
         True colour
       </button>
-      <label v-if="state.mode === 'daily' && trueColor" class="tool opacity" title="True-colour image opacity">
-        <input v-model.number="tcOpacity" type="range" min="0.2" max="1" step="0.05" aria-label="True-colour opacity" />
+      <label v-if="state.mode === 'daily' && trueColor" class="tool opacity" title="Mask opacity over the true-colour images">
+        Mask
+        <input v-model.number="maskOpacity" type="range" min="0" max="1" step="0.05" aria-label="Mask opacity" />
       </label>
       <button
         v-if="state.mode === 'daily'"
@@ -71,18 +72,20 @@
       <span>{{ state.maskError || `Loading ${selectedPeriod ? formatPeriod(selectedPeriod, state.mode) : ''}…` }}</span>
     </div>
 
-    <div v-if="gridReady" class="cell-hint">
-      {{ zoom >= CELL_MIN_ZOOM ? 'Click a 4 km cell for its time series' : 'Zoom in to explore 4 km cell time series' }}
-    </div>
+    <div class="map-hints">
+      <div v-if="gridReady" class="cell-hint">
+        {{ zoom >= CELL_MIN_ZOOM ? 'Click a 4 km cell for its time series' : 'Zoom in to explore 4 km cell time series' }}
+      </div>
 
-    <div v-if="state.mode === 'daily' && trueColor" class="tc-hint">
-      <template v-if="zoom < TC_MIN_ZOOM">Zoom in to see this day's true-colour images</template>
-      <template v-else-if="tcLoading">Loading true-colour images…</template>
-      <template v-else-if="tcInfo && tcInfo.shown">
-        {{ tcInfo.shown }} true-colour image{{ tcInfo.shown === 1 ? '' : 's' }} in view{{ tcInfo.total > tcInfo.shown ? ` (nearest ${tcInfo.shown} of ${tcInfo.total})` : '' }}
-        · <a :href="tcInfo.nearest.url" target="_blank" rel="noopener" :title="tcInfo.nearest.id">Open image ↗</a>
-      </template>
-      <template v-else>No true-colour image for this day here</template>
+      <div v-if="state.mode === 'daily' && trueColor" class="tc-hint">
+        <template v-if="zoom < TC_MIN_ZOOM">Zoom in to see this day's true-colour images</template>
+        <template v-else-if="tcLoading">Loading true-colour images…</template>
+        <template v-else-if="tcInfo && tcInfo.shown">
+          {{ tcInfo.shown }} true-colour image{{ tcInfo.shown === 1 ? '' : 's' }} in view{{ tcInfo.total > tcInfo.shown ? ` (nearest ${tcInfo.shown} of ${tcInfo.total})` : '' }}
+          · <a :href="tcInfo.nearest.url" target="_blank" rel="noopener" :title="tcInfo.nearest.id">Open image ↗</a>
+        </template>
+        <template v-else>No true-colour image for this day here</template>
+      </div>
     </div>
 
     <div v-if="state.mode === 'daily'" class="legend legend-daily">
@@ -136,6 +139,14 @@ const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.
 const WATER = '#0d1540'
 const MASK = '#9be22f'
 const MASK_LAYERS = ['mask-dots-glow', 'mask-dots', 'mask-fill', 'mask-line']
+// Each mask layer's opacity property and its zoom stops [zoom, opacity, zoom, opacity] at full strength;
+// the mask-opacity slider (shown with the true-colour images) scales the opacities.
+const MASK_OPACITY: Record<string, ['circle-opacity' | 'fill-opacity' | 'line-opacity', number, number, number, number]> = {
+  'mask-dots-glow': ['circle-opacity', 6, 0.35, 9, 0],
+  'mask-dots': ['circle-opacity', 7, 1, 9, 0],
+  'mask-fill': ['fill-opacity', 6, 0, 8, 0.9],
+  'mask-line': ['line-opacity', 6, 0, 8, 1],
+}
 const COMP_LAYERS = ['comp-lo', 'comp-hi']
 const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line']
 const OBS_FILL = '#8fa6ff'
@@ -162,7 +173,7 @@ const styleReady = ref(false)
 const zoom = ref(0)
 const gridReady = ref(false)
 const trueColor = ref(false)
-const tcOpacity = ref(1)
+const maskOpacity = ref(1)
 const tcLoading = ref(false)
 const tcInfo = shallowRef<{ shown: number; total: number; nearest: { id: string; url: string } } | null>(null)
 let grid: Grid | null = null
@@ -250,7 +261,7 @@ onMounted(() => {
         'circle-color': MASK,
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 6],
         'circle-blur': 1,
-        'circle-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.35, 9, 0],
+        'circle-opacity': maskOpacityExpr('mask-dots-glow'),
       },
     }, firstLabel)
     m.addLayer({
@@ -261,7 +272,7 @@ onMounted(() => {
       paint: {
         'circle-color': MASK,
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 1, 8, 2],
-        'circle-opacity': ['interpolate', ['linear'], ['zoom'], 7, 1, 9, 0],
+        'circle-opacity': maskOpacityExpr('mask-dots'),
       },
     }, firstLabel)
     m.addLayer({
@@ -271,7 +282,7 @@ onMounted(() => {
       minzoom: 6,
       paint: {
         'fill-color': MASK,
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0, 8, 0.9],
+        'fill-opacity': maskOpacityExpr('mask-fill'),
       },
     }, firstLabel)
     m.addLayer({
@@ -282,7 +293,7 @@ onMounted(() => {
       paint: {
         'line-color': MASK,
         'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 0.6],
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0, 8, 1],
+        'line-opacity': maskOpacityExpr('mask-line'),
       },
     }, firstLabel)
 
@@ -574,7 +585,7 @@ async function updateTrueColor() {
       id,
       type: 'raster',
       source: id,
-      paint: { 'raster-opacity': tcOpacity.value, 'raster-fade-duration': 0 },
+      paint: { 'raster-opacity': 1, 'raster-fade-duration': 0 },
     }, e.s === 'L' && firstS2 ? firstS2 : 'coverage-fill')
   }
   const nearest = chosen[0]
@@ -583,8 +594,16 @@ async function updateTrueColor() {
     : { shown: 0, total: 0, nearest: { id: '', url: '' } }
 }
 watch(() => [trueColor.value, state.selectedId, state.mode, state.region, styleReady.value] as const, () => updateTrueColor())
-watch(tcOpacity, (o) => {
-  for (const id of tcLayerIds()) map.value?.setPaintProperty(id, 'raster-opacity', o)
+// The mask slider applies only while the true-colour images are on; otherwise masks are at full strength.
+function maskOpacityExpr(id: string) {
+  const [, z0, o0, z1, o1] = MASK_OPACITY[id]
+  const k = trueColor.value ? maskOpacity.value : 1
+  return ['interpolate', ['linear'], ['zoom'], z0, o0 * k, z1, o1 * k] as ['interpolate', ['linear'], ['zoom'], number, number, number, number]
+}
+watch([maskOpacity, trueColor], () => {
+  for (const id of MASK_LAYERS) {
+    if (map.value?.getLayer(id)) map.value.setPaintProperty(id, MASK_OPACITY[id][0], maskOpacityExpr(id))
+  }
 })
 
 function setVisible(ids: string[], on: boolean) {
@@ -740,6 +759,7 @@ function download() {
   height: 100%;
   min-height: 0;
   background: var(--water);
+  container-type: size;
 }
 .map {
   position: absolute;
@@ -891,10 +911,23 @@ function download() {
 a.tool {
   text-decoration: none;
 }
-.tc-hint {
+/* Hints stacked at the top right; on a narrow map they move below the toolbar so they don't cover it. */
+.map-hints {
   position: absolute;
-  top: 48px;
+  top: 12px;
   right: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  z-index: 2;
+}
+@container (max-width: 1050px) {
+  .map-hints {
+    top: 56px;
+  }
+}
+.tc-hint {
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--glass);
@@ -915,9 +948,6 @@ a.tool {
   accent-color: var(--accent);
 }
 .cell-hint {
-  position: absolute;
-  top: 12px;
-  right: 56px;
   padding: 6px 10px;
   border-radius: 8px;
   background: var(--glass);
