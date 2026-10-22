@@ -12,9 +12,18 @@ export const OPTIONS = {
   coverage: { type: 'string' },
   cells: { type: 'string' },
   summary: { type: 'string' },
+  // per-day true-colour preview lists of a region (scripts/build-preview-index.mjs) → <prefix>previews/
+  previews: { type: 'string' },
+  // the true-colour .webp images themselves (scripts/build_previews.py), with --prefix previews-truecolor/
+  images: { type: 'string' },
   // R2 folder to upload into; defaults to MASK_PREFIX in wrangler.jsonc (e.g. --prefix europe-masks-2025/).
   prefix: { type: 'string' },
 }
+
+/** Folders uploaded as <prefix><kind>/... */
+export const DERIVED = ['composites', 'coverage', 'cells', 'previews']
+/** Every source option, to check that at least one was given. */
+export const SOURCES = ['masks', ...DERIVED, 'summary', 'images']
 
 /** Bucket name and key prefix (from wrangler.jsonc unless overridden), so uploads land where the dashboard reads. */
 export function r2Config(prefix) {
@@ -45,10 +54,17 @@ export async function collectEntries(args, prefix) {
       }
     }
   }
-  for (const kind of ['composites', 'coverage', 'cells']) {
+  for (const kind of DERIVED) {
     if (!args[kind]) continue
     for await (const file of walk(args[kind])) await add(`${prefix}${kind}/${posix(relative(args[kind], file))}`, file)
   }
   if (args.summary) await add(`${prefix}summary.json`, args.summary)
+  // True-colour images (scripts/build_previews.py): only the .webp files, keeping <sensor>/<tile>/,
+  // uploaded under their own prefix (previews-truecolor/) shared by all regions.
+  if (args.images) {
+    for await (const file of walk(args.images)) {
+      if (file.endsWith('.webp')) await add(`${prefix}${posix(relative(args.images, file))}`, file)
+    }
+  }
   return entries
 }

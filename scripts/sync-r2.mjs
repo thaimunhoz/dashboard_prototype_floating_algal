@@ -25,7 +25,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
-import { OPTIONS, r2Config, collectEntries } from './lib/r2-entries.mjs'
+import { OPTIONS, SOURCES, DERIVED, r2Config, collectEntries } from './lib/r2-entries.mjs'
 
 const { values: args } = parseArgs({
   options: {
@@ -40,8 +40,8 @@ const { values: args } = parseArgs({
     rate: { type: 'string', default: '3' },
   },
 })
-if (!['masks', 'composites', 'coverage', 'cells', 'summary'].some((k) => args[k])) {
-  console.error('Usage: node scripts/sync-r2.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--upload] [--prune] | [--init]')
+if (!SOURCES.some((k) => args[k])) {
+  console.error('Usage: node scripts/sync-r2.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--previews DIR] [--images DIR] [--summary FILE] [--upload] [--prune] | [--init]')
   process.exit(1)
 }
 
@@ -116,8 +116,9 @@ if (args.verify && changed.length) {
 const local = new Set(entries.map((e) => e.key))
 const inScope = (rest) =>
   (args.masks && /^\d{4}-\d{2}-\d{2}\//.test(rest)) ||
-  ['composites', 'coverage', 'cells'].some((k) => args[k] && rest.startsWith(`${k}/`)) ||
-  (args.summary && rest === 'summary.json')
+  DERIVED.some((k) => args[k] && rest.startsWith(`${k}/`)) ||
+  (args.summary && rest === 'summary.json') ||
+  (args.images && /^(sentinel|landsat)\/.*\.webp$/.test(rest))
 const stale = Object.keys(state).filter((k) => k.startsWith(prefix) && !local.has(k) && inScope(k.slice(prefix.length)))
 
 // Summarise by folder so a long list stays readable.
@@ -125,9 +126,15 @@ function printGroups(keys) {
   const groups = new Map()
   for (const key of keys) {
     const rest = key.slice(prefix.length)
-    const group = /^\d{4}-\d{2}-\d{2}\//.test(rest) ? 'daily masks' : rest.includes('/') ? rest.slice(0, rest.lastIndexOf('/')) : rest
-    groups.set(group, [...(groups.get(group) ?? []), rest.slice(rest.lastIndexOf('/') + 1)])
+    // true-colour images: one line per sensor, listing tiles (not one line per tile folder)
+    const image = rest.match(/^(sentinel|landsat)\/([^/]+)\//)
+    const group = /^\d{4}-\d{2}-\d{2}\//.test(rest) ? 'daily masks'
+      : image ? `${image[1]} images (tiles)` : rest.includes('/') ? rest.slice(0, rest.lastIndexOf('/')) : rest
+    const item = image ? image[2] : rest.slice(rest.lastIndexOf('/') + 1)
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group).push(item)
   }
+  for (const [group, items] of groups) if (group.endsWith('(tiles)')) groups.set(group, [...new Set(items)])
   for (const [group, files] of groups) {
     const shown = group === 'daily masks' ? [...new Set(files.map((f) => f.slice(0, 10)))] : files
     console.log(`  ${group}: ${shown.length > 12 ? `${shown.slice(0, 12).join(', ')} … (+${shown.length - 12})` : shown.join(', ')}`)

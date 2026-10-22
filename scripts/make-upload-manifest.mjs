@@ -3,20 +3,20 @@
 // To upload only what changed since the last upload, use scripts/sync-r2.mjs instead.
 //
 // Usage:
-//   node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--out FILE]
+//   node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--previews DIR] [--images DIR] [--summary FILE] [--out FILE]
 //   node scripts/make-upload-manifest.mjs --composites data/composites --coverage data/coverage --cells data/cells --out data/upload-derived.json
 // Then:
 //   npx wrangler r2 bulk put floating-algal-dashboard --filename <out> --remote
 import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parseArgs } from 'node:util'
-import { OPTIONS, r2Config, collectEntries } from './lib/r2-entries.mjs'
+import { OPTIONS, SOURCES, DERIVED, r2Config, collectEntries } from './lib/r2-entries.mjs'
 
 const { values: args } = parseArgs({
   options: { ...OPTIONS, out: { type: 'string', default: 'data/upload-manifest.json' } },
 })
-if (!['masks', 'composites', 'coverage', 'cells', 'summary'].some((k) => args[k])) {
-  console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--summary FILE] [--out FILE]')
+if (!SOURCES.some((k) => args[k])) {
+  console.error('Usage: node scripts/make-upload-manifest.mjs [--masks DIR] [--composites DIR] [--coverage DIR] [--cells DIR] [--previews DIR] [--images DIR] [--summary FILE] [--out FILE]')
   process.exit(1)
 }
 

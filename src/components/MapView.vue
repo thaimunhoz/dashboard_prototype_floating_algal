@@ -23,6 +23,24 @@
       <button
         v-if="state.mode === 'daily'"
         class="tool"
+        :class="{ active: trueColor }"
+        :aria-pressed="trueColor"
+        title="Show this day's true-colour satellite images under the masks (zoom in)"
+        @click="trueColor = !trueColor"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M5 17l4.5-5 3.5 3.5 2.5-2.5L19 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+          <circle cx="15.5" cy="9" r="1.6" fill="currentColor" />
+        </svg>
+        True colour
+      </button>
+      <label v-if="state.mode === 'daily' && trueColor" class="tool opacity" title="True-colour image opacity">
+        <input v-model.number="tcOpacity" type="range" min="0.2" max="1" step="0.05" aria-label="True-colour opacity" />
+      </label>
+      <button
+        v-if="state.mode === 'daily'"
+        class="tool"
         :disabled="!current || !current.geojson.features.length"
         title="Download this day's mask as GeoJSON"
         @click="download"
@@ -55,6 +73,16 @@
 
     <div v-if="gridReady" class="cell-hint">
       {{ zoom >= CELL_MIN_ZOOM ? 'Click a 4 km cell for its time series' : 'Zoom in to explore 4 km cell time series' }}
+    </div>
+
+    <div v-if="state.mode === 'daily' && trueColor" class="tc-hint">
+      <template v-if="zoom < TC_MIN_ZOOM">Zoom in to see this day's true-colour images</template>
+      <template v-else-if="tcLoading">Loading true-colour images…</template>
+      <template v-else-if="tcInfo && tcInfo.shown">
+        {{ tcInfo.shown }} true-colour image{{ tcInfo.shown === 1 ? '' : 's' }} in view{{ tcInfo.total > tcInfo.shown ? ` (nearest ${tcInfo.shown} of ${tcInfo.total})` : '' }}
+        · <a :href="tcInfo.nearest.url" target="_blank" rel="noopener" :title="tcInfo.nearest.id">Open image ↗</a>
+      </template>
+      <template v-else>No true-colour image for this day here</template>
     </div>
 
     <div v-if="state.mode === 'daily'" class="legend legend-daily">
@@ -101,7 +129,7 @@ import FOOTPRINTS from '../../shared/footprints.json'
 import { loadGrid, cellAt, loadCellSeries, loadViewSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
 import CellSeries from './CellSeries.vue'
 import { loadMask, prefetchMask, type LoadedMask } from '../masks'
-import { compositeUrl, coverageUrl } from '../dataSource'
+import { compositeUrl, coverageUrl, previewDayUrl, truecolorUrl } from '../dataSource'
 import type { FeatureCollection } from 'geojson'
 
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
@@ -115,6 +143,9 @@ const OBS_S2 = '#8fa6ff'
 const OBS_LANDSAT = '#e8b04a'
 // The 4 km cells become clickable from this zoom on.
 const CELL_MIN_ZOOM = 6
+// True-colour images are drawn from this zoom, at most this many (the nearest to the map centre).
+const TC_MIN_ZOOM = 6.5
+const TC_MAX_IMAGES = 16
 // Detailed composite image takes over from the ~4 km overview around this zoom.
 const COMP_SWITCH_ZOOM = 6.5
 
@@ -130,6 +161,10 @@ const basemap = ref<'dark' | 'satellite'>('dark')
 const styleReady = ref(false)
 const zoom = ref(0)
 const gridReady = ref(false)
+const trueColor = ref(false)
+const tcOpacity = ref(1)
+const tcLoading = ref(false)
+const tcInfo = shallowRef<{ shown: number; total: number; nearest: { id: string; url: string } } | null>(null)
 let grid: Grid | null = null
 
 const comp = computed(() => (state.mode === 'daily' ? null : state.composites[state.mode] ?? null))
@@ -270,6 +305,7 @@ onMounted(() => {
     viewTimer = window.setTimeout(() => {
       detectRegion()
       updateView()
+      updateTrueColor()
     }, 250)
   })
   m.on('mousemove', onCellHover)
@@ -461,6 +497,95 @@ function setCoverageData(fc: FeatureCollection | null) {
 }
 
 watch(() => state.showCoverage, (on) => setVisible(COVERAGE_LAYERS, on && state.mode === 'daily'))
+
+// ── true-colour images (scripts/build_previews.py) ─────────────────
+// Each region has a small list per day of the previews of that day (scene, tile, map corners);
+// the images of the tiles in view are drawn under the coverage outlines and the masks.
+type PreviewEntry = { s: 'S' | 'L'; t: string; id: string; c: [number, number][]; v: number }
+const previewDayCache = new Map<string, Promise<PreviewEntry[] | null>>()
+function loadPreviewDay(region: RegionId, date: string) {
+  const key = `${region}/${date}`
+  let p = previewDayCache.get(key)
+  if (!p) {
+    p = fetch(previewDayUrl(region, date))
+      .then((r) => (r.ok ? (r.json() as Promise<PreviewEntry[]>) : null))
+      .catch(() => null)
+    previewDayCache.set(key, p)
+    if (previewDayCache.size > 30) previewDayCache.delete(previewDayCache.keys().next().value!)
+  }
+  return p
+}
+const tcLayerIds = () => map.value?.getStyle().layers.filter((l) => l.id.startsWith('tc-')).map((l) => l.id) ?? []
+function clearTrueColor() {
+  const m = map.value
+  if (!m) return
+  for (const id of tcLayerIds()) {
+    m.removeLayer(id)
+    if (m.getSource(id)) m.removeSource(id)
+  }
+}
+let tcToken = 0
+async function updateTrueColor() {
+  const m = map.value
+  const my = ++tcToken
+  if (!m || !styleReady.value || !trueColor.value || state.mode !== 'daily' || !state.selectedId || m.getZoom() < TC_MIN_ZOOM) {
+    clearTrueColor()
+    tcInfo.value = null
+    tcLoading.value = false
+    return
+  }
+  tcLoading.value = true
+  const list = await loadPreviewDay(state.region, state.selectedId)
+  if (my !== tcToken) return
+  tcLoading.value = false
+  const b = m.getBounds()
+  const c = m.getCenter()
+  const box = (e: PreviewEntry) => {
+    const xs = e.c.map((p) => p[0])
+    const ys = e.c.map((p) => p[1])
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
+  }
+  const inView = (list ?? []).filter((e) => {
+    const [w, s_, ea, n] = box(e)
+    return w < b.getEast() && ea > b.getWest() && s_ < b.getNorth() && n > b.getSouth()
+  })
+  const dist = (e: PreviewEntry) => {
+    const [w, s_, ea, n] = box(e)
+    return Math.hypot((w + ea) / 2 - c.lng, (s_ + n) / 2 - c.lat)
+  }
+  inView.sort((a, b2) => dist(a) - dist(b2))
+  const chosen = inView.slice(0, TC_MAX_IMAGES)
+  const layerId = (e: PreviewEntry) => `tc-${e.s}-${e.t}-${e.id}`
+  const wanted = new Set(chosen.map(layerId))
+  for (const id of tcLayerIds()) {
+    if (!wanted.has(id)) {
+      m.removeLayer(id)
+      if (m.getSource(id)) m.removeSource(id)
+    }
+  }
+  // Landsat first, then Sentinel-2, so where both exist the Sentinel-2 image is on top.
+  for (const e of [...chosen].sort((a, b2) => (a.s === b2.s ? 0 : a.s === 'L' ? -1 : 1))) {
+    const id = layerId(e)
+    if (m.getLayer(id)) continue
+    const sensor = e.s === 'S' ? 'sentinel' : 'landsat'
+    m.addSource(id, { type: 'image', url: truecolorUrl(sensor, e.t, e.id), coordinates: e.c as [[number, number], [number, number], [number, number], [number, number]] })
+    const firstS2 = tcLayerIds().find((l) => l.startsWith('tc-S-'))
+    m.addLayer({
+      id,
+      type: 'raster',
+      source: id,
+      paint: { 'raster-opacity': tcOpacity.value, 'raster-fade-duration': 0 },
+    }, e.s === 'L' && firstS2 ? firstS2 : 'coverage-fill')
+  }
+  const nearest = chosen[0]
+  tcInfo.value = nearest
+    ? { shown: chosen.length, total: inView.length, nearest: { id: nearest.id, url: truecolorUrl(nearest.s === 'S' ? 'sentinel' : 'landsat', nearest.t, nearest.id) } }
+    : { shown: 0, total: 0, nearest: { id: '', url: '' } }
+}
+watch(() => [trueColor.value, state.selectedId, state.mode, state.region, styleReady.value] as const, () => updateTrueColor())
+watch(tcOpacity, (o) => {
+  for (const id of tcLayerIds()) map.value?.setPaintProperty(id, 'raster-opacity', o)
+})
 
 function setVisible(ids: string[], on: boolean) {
   for (const id of ids) {
@@ -765,6 +890,29 @@ function download() {
 }
 a.tool {
   text-decoration: none;
+}
+.tc-hint {
+  position: absolute;
+  top: 48px;
+  right: 56px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--glass);
+  border: 1px solid rgba(143, 166, 255, 0.5);
+  font-size: 11.5px;
+  color: var(--text-2);
+  z-index: 2;
+}
+.tc-hint a {
+  color: var(--accent);
+  font-weight: 600;
+}
+.tool.opacity {
+  padding: 0 10px;
+}
+.tool.opacity input {
+  width: 80px;
+  accent-color: var(--accent);
 }
 .cell-hint {
   position: absolute;

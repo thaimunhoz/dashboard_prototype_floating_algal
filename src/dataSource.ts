@@ -40,6 +40,23 @@ export function coverageUrl(region: RegionId, file: string) {
   return derivedUrl(region, `coverage/${file}`)
 }
 
+/** A region's list of true-colour previews for one day (scripts/build-preview-index.mjs). */
+export function previewDayUrl(region: RegionId, date: string) {
+  return derivedUrl(region, `previews/${date}.json`)
+}
+
+// True-colour images live in one bucket folder shared by all regions. VITE_TRUECOLOR_URL can point
+// at a local copy while testing (e.g. /data/truecolor/ in .env.development.local).
+const truecolorBase = (import.meta.env.VITE_TRUECOLOR_URL as string | undefined)?.replace(/\/?$/, '/')
+const TRUECOLOR_PREFIX = 'previews-truecolor/'
+
+/** One true-colour preview image (scripts/build_previews.py). */
+export function truecolorUrl(sensor: 'sentinel' | 'landsat', tile: string, scene: string) {
+  const path = `${sensor}/${tile}/${scene}.webp`
+  if (truecolorBase) return `${truecolorBase}${path}`
+  return base ? `${base}${TRUECOLOR_PREFIX}${path}` : `/api/truecolor/${path}`
+}
+
 /** 4 km fishnet time series from scripts/build_cells.py ('grid.json' or '<block>.json'). */
 export function cellsUrl(region: RegionId, file: string) {
   return derivedUrl(region, `cells/${file}`)

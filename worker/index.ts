@@ -6,6 +6,8 @@ interface Env {
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+/** Bucket folder of the true-colour previews (scripts/build_previews.py), shared by all regions. */
+const TRUECOLOR_PREFIX = 'previews-truecolor/'
 // Shapefile components we are willing to serve.
 const MASK_EXTENSIONS = new Set(['shp', 'dbf', 'shx', 'prj', 'cpg'])
 
@@ -15,6 +17,17 @@ export default {
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return json({ error: 'Method not allowed' }, 405)
+    }
+
+    // True-colour previews, shared by all regions: /api/truecolor/sentinel/19QDA/<scene>.webp
+    const tc = url.pathname.match(/^\/api\/truecolor\/((?:sentinel|landsat)\/\w+\/\w+\.webp)$/)
+    if (tc) {
+      try {
+        return await getDerived(env, TRUECOLOR_PREFIX, tc[1])
+      } catch (err) {
+        console.error(err)
+        return json({ error: 'Internal error' }, 500)
+      }
     }
 
     // /api/<region>/<rest>; the region maps to its folder in the bucket (shared/regions.ts).
@@ -37,7 +50,8 @@ export default {
       if (
         /^composites\/(weekly|monthly)\/(summary\.json|[\w-]+\.png)$/.test(rest) ||
         /^coverage\/(summary\.json|\d{4}-\d{2}-\d{2}\.geojson)$/.test(rest) ||
-        /^cells\/(grid\.json|\d+_\d+\.json)$/.test(rest)
+        /^cells\/(grid\.json|\d+_\d+\.json)$/.test(rest) ||
+        /^previews\/\d{4}-\d{2}-\d{2}\.json$/.test(rest)
       ) {
         return await getDerived(env, prefix, rest)
       }
@@ -101,7 +115,8 @@ async function getDerived(env: Env, prefix: string, path: string): Promise<Respo
   const headers = new Headers()
   obj.writeHttpMetadata(headers)
   headers.set('etag', obj.httpEtag)
-  const type = path.endsWith('.png') ? 'image/png' : path.endsWith('.geojson') ? 'application/geo+json' : 'application/json'
+  const type = path.endsWith('.png') ? 'image/png' : path.endsWith('.webp') ? 'image/webp'
+    : path.endsWith('.geojson') ? 'application/geo+json' : 'application/json'
   headers.set('content-type', type)
   const short = path.endsWith('summary.json') || path.endsWith('grid.json')
   headers.set('cache-control', `public, max-age=${short ? 300 : 86400}`)
