@@ -4,6 +4,7 @@
       <strong>4 km cell</strong>
       <span class="coords">{{ center }}</span>
     </header>
+    <p v-if="tiles" class="tiles">{{ tiles }}</p>
 
     <p v-if="!series" class="empty">This location is outside the 4 km analysis grid.</p>
     <template v-else>
@@ -79,6 +80,8 @@ const props = defineProps<{
   series: CellSeries | null
   center: string
   selectedDate: string
+  /** Satellite tiles observed at the clicked point on the selected day. */
+  tiles?: string
 }>()
 const emit = defineEmits<{ pick: [date: string] }>()
 
@@ -162,6 +165,11 @@ header strong {
   color: var(--text-3);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+.tiles {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 11.5px;
 }
 .empty {
   color: var(--text-2);

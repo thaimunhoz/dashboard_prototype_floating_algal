@@ -455,6 +455,7 @@ async function onCellClick(ev: maplibregl.MapMouseEvent) {
   const props = reactive({ series: null as Series | null, loading: true })
   const el = document.createElement('div')
   const center = `${((c.bounds[1] + c.bounds[3]) / 2).toFixed(3)}°, ${((c.bounds[0] + c.bounds[2]) / 2).toFixed(3)}°`
+  const { lng, lat } = ev.lngLat
   const app = createApp({
     render: () =>
       props.loading
@@ -463,6 +464,7 @@ async function onCellClick(ev: maplibregl.MapMouseEvent) {
             series: props.series,
             center,
             selectedDate: state.mode === 'daily' ? state.selectedId : '',
+            tiles: tilesAt(lng, lat),
             onPick: (date: string) => {
               if (state.mode !== 'daily') setMode('daily')
               selectPeriod(date)
@@ -502,12 +504,46 @@ function loadCoverageDay(region: RegionId, date: string) {
   }
   return p
 }
+// The selected day's coverage, also used to name the tiles under a clicked point.
+const coverageFc = shallowRef<FeatureCollection | null>(null)
 function setCoverageData(fc: FeatureCollection | null) {
+  coverageFc.value = fc
   if (!styleReady.value) return
   ;(map.value?.getSource('coverage') as GeoJSONSource | undefined)?.setData(fc ?? { type: 'FeatureCollection', features: [] })
 }
 
 watch(() => state.showCoverage, (on) => setVisible(COVERAGE_LAYERS, on && state.mode === 'daily'))
+
+/** "Sentinel-2 19QDA · Landsat 004/047" for the tiles observed at a point on the selected day (daily mode). */
+function tilesAt(lng: number, lat: number) {
+  const fc = coverageFc.value
+  if (state.mode !== 'daily' || !fc) return ''
+  const s2 = new Set<string>()
+  const ls = new Set<string>()
+  let landsatTile = ''
+  for (const f of fc.features) {
+    const p = f.properties ?? {}
+    const g = f.geometry
+    if (p.kind !== 'tile' || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) continue
+    const mp = { coordinates: g.type === 'Polygon' ? [g.coordinates] : g.coordinates }
+    if (!inMultiPolygon(lng, lat, mp)) continue
+    const sensors = String(p.sensors ?? '')
+    if (sensors.includes('S2')) s2.add(p.tile)
+    if (sensors.includes('Landsat')) {
+      landsatTile ||= p.tile
+      // WRS-2 path_row, e.g. "4_47" → "004/047" (missing in coverage files built before it was added)
+      for (const pr of String(p.landsat ?? '').split(',').filter(Boolean)) {
+        const [path, row] = pr.split('_')
+        ls.add(`${path.padStart(3, '0')}/${row.padStart(3, '0')}`)
+      }
+    }
+  }
+  const parts = []
+  if (s2.size) parts.push(`Sentinel-2 ${[...s2].sort().join(', ')}`)
+  if (ls.size) parts.push(`Landsat ${[...ls].sort().join(', ')}`)
+  else if (landsatTile) parts.push(`Landsat (S2 grid ${landsatTile})`)
+  return parts.length ? `${formatDate(state.selectedId)}: ${parts.join(' · ')}` : `Not imaged on ${formatDate(state.selectedId)}`
+}
 
 // ── true-colour images (scripts/build_previews.py) ─────────────────
 // Each region has a small list per day of the previews of that day (scene, tile, map corners);

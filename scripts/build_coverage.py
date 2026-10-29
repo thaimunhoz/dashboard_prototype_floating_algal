@@ -19,7 +19,8 @@ Usage (conda base env has geopandas/shapely):
 Output (upload under <MASK_PREFIX>coverage/):
     <out>/2025-01-13.geojson  features:
         {kind: "observed"}                     merged observed area (fill)
-        {kind: "tile", tile, sensors}          S2 tile (or its Landsat-covered part) outlines
+        {kind: "tile", tile, sensors, landsat} S2 tile (or its Landsat-covered part) outlines;
+                                               landsat = the WRS-2 path_rows seen on it that day, e.g. "4_47,5_47"
     <out>/summary.json        {days: {date: {s2_tiles, landsat_scenes, tiles, observed_km2}}}
 """
 from __future__ import annotations
@@ -101,11 +102,12 @@ def main() -> None:
         tiles: dict[str, dict] = {}
         for t in s2_days.get(date, ()):
             if t in s2_geom:
-                tiles[t] = {"geoms": [s2_geom[t]], "sensors": {"S2"}}
+                tiles[t] = {"geoms": [s2_geom[t]], "sensors": {"S2"}, "landsat": set()}
         for scene in ls_days.get(date, ()):
             for t, g in ls_pieces.get(scene, ()):
-                entry = tiles.setdefault(t, {"geoms": [], "sensors": set()})
+                entry = tiles.setdefault(t, {"geoms": [], "sensors": set(), "landsat": set()})
                 entry["sensors"].add("Landsat")
+                entry["landsat"].add(scene)
                 if "S2" not in entry["sensors"]:  # S2 already covers the whole tile
                     entry["geoms"].append(g)
 
@@ -116,9 +118,10 @@ def main() -> None:
             if g.is_empty:
                 continue
             tile_geoms.append(g)
-            features.append({"type": "Feature", "properties": {
-                "kind": "tile", "tile": t, "sensors": "+".join(sorted(e["sensors"], reverse=True))},
-                "geometry": shapely.geometry.mapping(g)})
+            props = {"kind": "tile", "tile": t, "sensors": "+".join(sorted(e["sensors"], reverse=True))}
+            if e["landsat"]:
+                props["landsat"] = ",".join(sorted(e["landsat"]))
+            features.append({"type": "Feature", "properties": props, "geometry": shapely.geometry.mapping(g)})
         observed = shapely.set_precision(shapely.union_all(tile_geoms), PRECISION) if tile_geoms else None
         if observed is not None and not observed.is_empty:
             features.insert(0, {"type": "Feature", "properties": {"kind": "observed"},
