@@ -21,6 +21,7 @@ Output (upload under <MASK_PREFIX>coverage/):
         {kind: "observed"}                     merged observed area (fill)
         {kind: "tile", tile, sensors, landsat} S2 tile (or its Landsat-covered part) outlines;
                                                landsat = the WRS-2 path_rows seen on it that day, e.g. "4_47,5_47"
+        {kind: "scene", landsat}               each Landsat scene's footprint (not drawn; names the path_row at a point)
     <out>/summary.json        {days: {date: {s2_tiles, landsat_scenes, tiles, observed_km2}}}
 """
 from __future__ import annotations
@@ -83,6 +84,7 @@ def main() -> None:
     for scene, tile, geom in zip(pieces["scene"], pieces["tile"], pieces.geometry):
         ls_pieces[scene].append((tile, geom))
     s2_geom = dict(zip(s2["tile"], s2.geometry))
+    ls_geom = dict(zip(ls["scene"], ls.geometry))
     print(f"{len(s2)} S2 tiles, {len(ls)} Landsat scenes -> {len(pieces)} Landsat pieces on the S2 grid")
 
     s2_days = scan(args.s2_dir, set(s2_geom), S2_RE, lambda m: (f"{m[1]}-{m[2]}-{m[3]}", m[4]))
@@ -122,6 +124,11 @@ def main() -> None:
             if e["landsat"]:
                 props["landsat"] = ",".join(sorted(e["landsat"]))
             features.append({"type": "Feature", "properties": props, "geometry": shapely.geometry.mapping(g)})
+        for scene in sorted(ls_days.get(date, ())):
+            if scene in ls_geom:
+                g = shapely.set_precision(ls_geom[scene], PRECISION)
+                features.append({"type": "Feature", "properties": {"kind": "scene", "landsat": scene},
+                                 "geometry": shapely.geometry.mapping(g)})
         observed = shapely.set_precision(shapely.union_all(tile_geoms), PRECISION) if tile_geoms else None
         if observed is not None and not observed.is_empty:
             features.insert(0, {"type": "Feature", "properties": {"kind": "observed"},

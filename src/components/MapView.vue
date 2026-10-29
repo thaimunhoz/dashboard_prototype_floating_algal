@@ -519,25 +519,30 @@ function tilesAt(lng: number, lat: number) {
   const fc = coverageFc.value
   if (state.mode !== 'daily' || !fc) return ''
   const s2 = new Set<string>()
-  const ls = new Set<string>()
+  const ls = new Set<string>() // path_rows whose scene footprint contains the point
+  const lsInTile = new Set<string>() // path_rows seen somewhere on the clicked S2 tile
   let landsatTile = ''
+  // WRS-2 path_row, e.g. "4_47" → "004/047"
+  const pathRow = (pr: string) => pr.split('_').map((n) => n.padStart(3, '0')).join('/')
   for (const f of fc.features) {
     const p = f.properties ?? {}
     const g = f.geometry
-    if (p.kind !== 'tile' || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) continue
+    if ((p.kind !== 'tile' && p.kind !== 'scene') || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) continue
     const mp = { coordinates: g.type === 'Polygon' ? [g.coordinates] : g.coordinates }
     if (!inMultiPolygon(lng, lat, mp)) continue
+    if (p.kind === 'scene') {
+      ls.add(pathRow(p.landsat))
+      continue
+    }
     const sensors = String(p.sensors ?? '')
     if (sensors.includes('S2')) s2.add(p.tile)
     if (sensors.includes('Landsat')) {
       landsatTile ||= p.tile
-      // WRS-2 path_row, e.g. "4_47" → "004/047" (missing in coverage files built before it was added)
-      for (const pr of String(p.landsat ?? '').split(',').filter(Boolean)) {
-        const [path, row] = pr.split('_')
-        ls.add(`${path.padStart(3, '0')}/${row.padStart(3, '0')}`)
-      }
+      for (const pr of String(p.landsat ?? '').split(',').filter(Boolean)) lsInTile.add(pathRow(pr))
     }
   }
+  // Coverage files built before the scene footprints were added only list the path_rows per tile.
+  if (!ls.size) for (const pr of lsInTile) ls.add(pr)
   const parts = []
   if (s2.size) parts.push(`Sentinel-2 ${[...s2].sort().join(', ')}`)
   if (ls.size) parts.push(`Landsat ${[...ls].sort().join(', ')}`)
