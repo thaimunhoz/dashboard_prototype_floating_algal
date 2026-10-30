@@ -97,7 +97,7 @@
         <div class="row">
           <span class="swatch obs" /> Observed
           <span class="tile-key s2" /> Sentinel-2
-          <span class="tile-key ls" /> Landsat only
+          <span class="tile-key ls" /> Landsat
         </div>
         <div class="row muted">
           {{ dayCoverage.s2_tiles }} S2 tiles · {{ dayCoverage.landsat_scenes }} Landsat scenes ·
@@ -148,7 +148,7 @@ const MASK_OPACITY: Record<string, ['circle-opacity' | 'fill-opacity' | 'line-op
   'mask-line': ['line-opacity', 6, 0, 8, 1],
 }
 const COMP_LAYERS = ['comp-lo', 'comp-hi']
-const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line']
+const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line', 'coverage-landsat']
 const OBS_FILL = '#8fa6ff'
 const OBS_S2 = '#8fa6ff'
 const OBS_LANDSAT = '#e8b04a'
@@ -230,7 +230,7 @@ onMounted(() => {
     m.addSource('coverage', { type: 'geojson', data: empty })
 
     // Observed area for the day (merged, so overlapping tiles don't darken) under the masks,
-    // plus S2 tile outlines: blue where Sentinel-2 imaged the tile, amber where only Landsat did.
+    // plus outlines of what was imaged: Sentinel-2 tiles in blue, Landsat scene footprints (WRS-2) in amber.
     m.addLayer({
       id: 'coverage-fill',
       type: 'fill',
@@ -242,11 +242,23 @@ onMounted(() => {
       id: 'coverage-line',
       type: 'line',
       source: 'coverage',
-      filter: ['==', ['get', 'kind'], 'tile'],
+      filter: ['all', ['==', ['get', 'kind'], 'tile'], ['in', 'S2', ['get', 'sensors']]],
       paint: {
-        'line-color': ['case', ['==', ['get', 'sensors'], 'Landsat'], OBS_LANDSAT, OBS_S2],
+        'line-color': OBS_S2,
         'line-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0.3, 8, 0.55],
         'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 8, 1],
+      },
+    }, firstLabel)
+    m.addLayer({
+      id: 'coverage-landsat',
+      type: 'line',
+      source: 'coverage',
+      filter: ['==', ['get', 'kind'], 'scene'],
+      paint: {
+        'line-color': OBS_LANDSAT,
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0.35, 8, 0.65],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 8, 1],
+        'line-dasharray': [3, 2],
       },
     }, firstLabel)
 
@@ -1056,6 +1068,7 @@ a.tool {
   border-color: #8fa6ff;
 }
 .tile-key.ls {
+  border-style: dashed;
   border-color: #e8b04a;
 }
 
