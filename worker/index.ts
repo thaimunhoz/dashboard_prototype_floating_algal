@@ -1,5 +1,5 @@
 import type { DaySummary, SummaryResponse } from '../shared/types'
-import { getRegion } from '../shared/regions'
+import { getDataset } from '../shared/regions'
 
 interface Env {
   MASKS: R2Bucket
@@ -30,9 +30,9 @@ export default {
       }
     }
 
-    // /api/<region>/<rest>; the region maps to its folder in the bucket (shared/regions.ts).
-    const m = url.pathname.match(/^\/api\/([a-z-]+)\/(.+)$/)
-    const region = m ? getRegion(m[1]) : undefined
+    // /api/<region>/<rest>; the region (or compare version) maps to its folder in the bucket (shared/regions.ts).
+    const m = url.pathname.match(/^\/api\/([a-z0-9-]+)\/(.+)$/)
+    const region = m ? getDataset(m[1]) : undefined
     if (!m || !region) return json({ error: 'Not found' }, 404)
     const prefix = region.prefix
     const rest = m[2]

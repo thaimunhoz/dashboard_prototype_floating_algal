@@ -3,7 +3,7 @@
 // - VITE_DATA_URL set (the public bucket root, e.g. https://pub-….r2.dev/): read files
 //   straight from the public bucket under each region's folder. Used for static hosting (Vercel).
 // - Not set: go through the Cloudflare Worker's /api/<region>/… routes (worker/index.ts).
-import { getRegion, type RegionId } from '../shared/regions'
+import { getDataset, type DatasetId, type RegionId } from '../shared/regions'
 
 const base = (import.meta.env.VITE_DATA_URL as string | undefined)?.replace(/\/?$/, '/')
 
@@ -12,8 +12,8 @@ const base = (import.meta.env.VITE_DATA_URL as string | undefined)?.replace(/\/?
 // (the daily masks still come from the bucket).
 const derivedBase = (import.meta.env.VITE_DERIVED_URL as string | undefined)?.replace(/\/?$/, '/')
 
-function bucketUrl(region: RegionId, path: string) {
-  return `${base}${getRegion(region)!.prefix}${path}`
+function bucketUrl(region: DatasetId, path: string) {
+  return `${base}${getDataset(region)!.prefix}${path}`
 }
 
 export function summaryUrl(region: RegionId) {
@@ -21,7 +21,7 @@ export function summaryUrl(region: RegionId) {
   return base ? bucketUrl(region, 'summary.json') : `/api/${region}/summary`
 }
 
-export function maskUrl(region: RegionId, date: string) {
+export function maskUrl(region: DatasetId, date: string) {
   return base ? bucketUrl(region, `${date}/${date}.shp`) : `/api/${region}/mask/${date}.shp`
 }
 

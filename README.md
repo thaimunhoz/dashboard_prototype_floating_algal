@@ -46,6 +46,12 @@ floating-algal-dashboard/
 Local copies of the built files live in `data/<region>/` (`data/caribbean/`, `data/europe/`).
 To add a region: add it to `shared/regions.ts`, build its files with the recipe below, upload them.
 
+**Comparing an updated version of a region's masks:** give it its own bucket folder (e.g.
+`north-america-masks-2025-v2/`), add it to `COMPARE_VERSIONS` in `shared/regions.ts`, and build its files
+as for a region. In the daily view a "Compare" button then draws those masks over the current ones.
+If the new masks are named `20250101/north_america_20250101.shp`, first run `scripts/prepare_masks.py` to
+copy them into the `2025-01-01/2025-01-01.shp` layout.
+
 ## How it works
 
 ```

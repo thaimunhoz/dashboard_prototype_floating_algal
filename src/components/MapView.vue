@@ -21,6 +21,17 @@
         Observed tiles
       </button>
       <button
+        v-if="state.mode === 'daily' && compareVersion"
+        class="tool"
+        :class="{ active: compareOn }"
+        :aria-pressed="compareOn"
+        :title="`Draw the ${compareVersion.label} masks of this day over the current ones`"
+        @click="compareOn = !compareOn"
+      >
+        <span class="swatch compare" />
+        Compare {{ compareVersion.label }}
+      </button>
+      <button
         v-if="state.mode === 'daily'"
         class="tool"
         :class="{ active: trueColor }"
@@ -93,6 +104,10 @@
         <span class="swatch" /> Floating algal bloom mask
         <span v-if="current" class="legend-date">{{ formatDate(current.date) }}</span>
       </div>
+      <div v-if="compareVersion && compareOn" class="row">
+        <span class="swatch compare" /> {{ compareVersion.label }} masks
+        <span class="legend-date">{{ compareLabel }}</span>
+      </div>
       <template v-if="state.showCoverage && dayCoverage">
         <div class="row">
           <span class="swatch obs" /> Observed
@@ -126,8 +141,8 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre locates its worker next to its own module, which Vite's bundling breaks;
 // let Vite build the worker and hand MapLibre the resulting URL.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
-import { state, periods, selectedPeriod, formatDate, formatPeriod, setMode, selectPeriod, setViewSeries, setRegion } from '../state'
-import { REGIONS, getRegion, type Region, type RegionId } from '../../shared/regions'
+import { state, periods, selectedPeriod, formatArea, formatDate, formatPeriod, setMode, selectPeriod, setViewSeries, setRegion } from '../state'
+import { REGIONS, getCompareVersion, getRegion, type Region, type RegionId } from '../../shared/regions'
 import FOOTPRINTS from '../../shared/footprints.json'
 import { loadGrid, cellAt, loadCellSeries, loadViewSeries, type CellRef, type CellSeries as Series, type Grid } from '../cells'
 import CellSeries from './CellSeries.vue'
@@ -138,7 +153,9 @@ import type { FeatureCollection } from 'geojson'
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 const WATER = '#0d1540'
 const MASK = '#9be22f'
+const MASK_COMPARE = '#ff4fd8'
 const MASK_LAYERS = ['mask-dots-glow', 'mask-dots', 'mask-fill', 'mask-line']
+const COMPARE_LAYERS = ['compare-dots-glow', 'compare-dots', 'compare-fill', 'compare-line']
 // Each mask layer's opacity property and its zoom stops [zoom, opacity, zoom, opacity] at full strength;
 // the mask-opacity slider (shown with the true-colour images) scales the opacities.
 const MASK_OPACITY: Record<string, ['circle-opacity' | 'fill-opacity' | 'line-opacity', number, number, number, number]> = {
@@ -146,6 +163,11 @@ const MASK_OPACITY: Record<string, ['circle-opacity' | 'fill-opacity' | 'line-op
   'mask-dots': ['circle-opacity', 7, 1, 9, 0],
   'mask-fill': ['fill-opacity', 6, 0, 8, 0.9],
   'mask-line': ['line-opacity', 6, 0, 8, 1],
+  // Translucent, so patches found by both versions show a mix of the two colours.
+  'compare-dots-glow': ['circle-opacity', 6, 0.35, 9, 0],
+  'compare-dots': ['circle-opacity', 7, 1, 9, 0],
+  'compare-fill': ['fill-opacity', 6, 0, 8, 0.55],
+  'compare-line': ['line-opacity', 6, 0, 8, 1],
 }
 const COMP_LAYERS = ['comp-lo', 'comp-hi']
 const COVERAGE_LAYERS = ['coverage-fill', 'coverage-line', 'coverage-landsat']
@@ -173,6 +195,9 @@ const styleReady = ref(false)
 const zoom = ref(0)
 const gridReady = ref(false)
 const trueColor = ref(false)
+const compareOn = ref(false)
+const compareMask = shallowRef<LoadedMask | null>(null)
+const compareError = ref(false)
 const maskOpacity = ref(1)
 const tcLoading = ref(false)
 const tcInfo = shallowRef<{ shown: number; total: number; nearest: { id: string; url: string } } | null>(null)
@@ -309,6 +334,54 @@ onMounted(() => {
       },
     }, firstLabel)
 
+    // The same layers for the updated masks (Compare), above the current ones.
+    m.addSource('compare', { type: 'geojson', data: empty })
+    m.addSource('compare-points', { type: 'geojson', data: empty })
+    m.addLayer({
+      id: 'compare-dots-glow',
+      type: 'circle',
+      source: 'compare-points',
+      maxzoom: 9,
+      paint: {
+        'circle-color': MASK_COMPARE,
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 6],
+        'circle-blur': 1,
+        'circle-opacity': maskOpacityExpr('compare-dots-glow'),
+      },
+    }, firstLabel)
+    m.addLayer({
+      id: 'compare-dots',
+      type: 'circle',
+      source: 'compare-points',
+      maxzoom: 9,
+      paint: {
+        'circle-color': MASK_COMPARE,
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 1, 8, 2],
+        'circle-opacity': maskOpacityExpr('compare-dots'),
+      },
+    }, firstLabel)
+    m.addLayer({
+      id: 'compare-fill',
+      type: 'fill',
+      source: 'compare',
+      minzoom: 6,
+      paint: {
+        'fill-color': MASK_COMPARE,
+        'fill-opacity': maskOpacityExpr('compare-fill'),
+      },
+    }, firstLabel)
+    m.addLayer({
+      id: 'compare-line',
+      type: 'line',
+      source: 'compare',
+      minzoom: 6,
+      paint: {
+        'line-color': MASK_COMPARE,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 0.6],
+        'line-opacity': maskOpacityExpr('compare-line'),
+      },
+    }, firstLabel)
+
     // 4 km cell under the cursor / clicked cell (the grid itself is never drawn).
     m.addSource('cell-hover', { type: 'geojson', data: empty })
     m.addSource('cell-selected', { type: 'geojson', data: empty })
@@ -347,6 +420,41 @@ function setMaskData(mask: LoadedMask | null) {
   ;(map.value?.getSource('mask') as GeoJSONSource | undefined)?.setData(mask?.geojson ?? empty)
   ;(map.value?.getSource('mask-points') as GeoJSONSource | undefined)?.setData(mask?.points ?? empty)
 }
+
+// ── compare: an updated version of the region's masks over the current ones (daily view) ──────
+const compareVersion = computed(() => getCompareVersion(state.region))
+let compareToken = 0
+watch(
+  () => [compareOn.value, state.selectedId, state.mode, compareVersion.value, styleReady.value] as const,
+  async ([on, id, mode, version, ready]) => {
+    const my = ++compareToken
+    compareError.value = false
+    let mask: LoadedMask | null = null
+    if (on && mode === 'daily' && version && id && ready) {
+      try {
+        mask = await loadMask(version.id, id)
+      } catch (err) {
+        console.error(err)
+        if (my === compareToken) compareError.value = true
+      }
+      if (my !== compareToken) return
+    }
+    compareMask.value = mask
+    const empty = { type: 'FeatureCollection' as const, features: [] }
+    ;(map.value?.getSource('compare') as GeoJSONSource | undefined)?.setData(mask?.geojson ?? empty)
+    ;(map.value?.getSource('compare-points') as GeoJSONSource | undefined)?.setData(mask?.points ?? empty)
+  },
+)
+/** The day's region-wide areas of both versions, for the legend. */
+const compareLabel = computed(() => {
+  if (compareError.value) return 'could not be loaded'
+  const before = current.value
+  const after = compareMask.value
+  if (!before || !after || before.date !== after.date) return 'Loading…'
+  const change = before.area_km2 > 0 ? (after.area_km2 / before.area_km2 - 1) * 100 : null
+  const pct = change == null ? '' : ` (${change >= 0 ? '+' : ''}${change.toFixed(0)}%)`
+  return `${formatArea(before.area_km2)} → ${formatArea(after.area_km2)} km²${pct}`
+})
 
 // ── region follows the map ─────────────────────────────────────────
 // Rules in shared/regions.ts: priority box, then Sentinel-2 tile footprint, then box / nearest.
@@ -654,7 +762,7 @@ function maskOpacityExpr(id: string) {
   return ['interpolate', ['linear'], ['zoom'], z0, o0 * k, z1, o1 * k] as ['interpolate', ['linear'], ['zoom'], number, number, number, number]
 }
 watch([maskOpacity, trueColor], () => {
-  for (const id of MASK_LAYERS) {
+  for (const id of [...MASK_LAYERS, ...COMPARE_LAYERS]) {
     if (map.value?.getLayer(id)) map.value.setPaintProperty(id, MASK_OPACITY[id][0], maskOpacityExpr(id))
   }
 })
@@ -1052,6 +1160,10 @@ a.tool {
 .legend-daily .muted {
   font-size: 11px;
   color: var(--text-3);
+}
+.swatch.compare {
+  background: #ff4fd8;
+  box-shadow: 0 0 8px #ff4fd8;
 }
 .swatch.obs {
   background: rgba(143, 166, 255, 0.35);

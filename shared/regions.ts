@@ -75,3 +75,21 @@ export const DEFAULT_REGION: RegionId = 'caribbean'
 export function getRegion(id: string | null | undefined): Region | undefined {
   return REGIONS.find((r) => r.id === id)
 }
+
+/** Updated versions of a region's masks, drawn over the current ones to compare them.
+ *  Each has its own bucket folder with the same layout; it is not a region of its own. */
+export const COMPARE_VERSIONS = {
+  'north-america': { id: 'north-america-v2', label: 'v2', prefix: 'north-america-masks-2025-v2/' },
+} as const satisfies Partial<Record<RegionId, { id: string; label: string; prefix: string }>>
+
+export type CompareVersion = (typeof COMPARE_VERSIONS)[keyof typeof COMPARE_VERSIONS]
+/** A bucket folder the masks can be read from: a region's or a compare version's. */
+export type DatasetId = RegionId | CompareVersion['id']
+
+export function getCompareVersion(region: RegionId): CompareVersion | undefined {
+  return (COMPARE_VERSIONS as Partial<Record<RegionId, CompareVersion>>)[region]
+}
+
+export function getDataset(id: string): { prefix: string } | undefined {
+  return getRegion(id) ?? Object.values(COMPARE_VERSIONS).find((v) => v.id === id)
+}
